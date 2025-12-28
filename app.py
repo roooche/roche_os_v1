@@ -685,10 +685,17 @@ def set_active_instance(instance_id: str, trigger_rerun: bool = True):
         _sync_instance_to_legacy(instance)
 
         # Restore API keys (they're global, not instance-specific)
+        # Use try/except because widget might already be instantiated
         if saved_gemini_key:
-            st.session_state.api_key = saved_gemini_key
+            try:
+                st.session_state.api_key = saved_gemini_key
+            except Exception:
+                pass  # Widget owns this key, will retain its value anyway
         if saved_claude_key:
-            st.session_state.claude_api_key = saved_claude_key
+            try:
+                st.session_state.claude_api_key = saved_claude_key
+            except Exception:
+                pass
 
         # Save updated status
         st.session_state.instance_manager.save_instance(instance)
