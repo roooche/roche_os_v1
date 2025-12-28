@@ -416,15 +416,21 @@ CUSTOM_CSS = """
         border: 1px solid #333 !important;
     }
 
-    /* Sticky tabs at top - instance switcher always visible */
-    [data-testid="stTabs"],
-    .stTabs {
-        position: sticky !important;
-        top: 0 !important;
-        z-index: 999 !important;
+    /* Instance tabs - FIXED positioning (nuclear option) */
+    .main [data-testid="stTabs"] > div:first-child {
+        position: fixed !important;
+        top: 50px !important;
+        left: 22rem !important;
+        right: 1rem !important;
+        z-index: 9999 !important;
         background: #0a0a0a !important;
         padding: 0.5rem 0 !important;
-        border-bottom: 1px solid #222;
+        border-bottom: 1px solid #333 !important;
+    }
+
+    /* Push tab content down to avoid overlap */
+    .main [data-testid="stTabs"] > div:nth-child(2) {
+        padding-top: 3rem !important;
     }
 
     [data-baseweb="tab-list"] {
@@ -437,12 +443,18 @@ CUSTOM_CSS = """
         border: 1px solid #333 !important;
         border-radius: 4px 4px 0 0 !important;
         color: #888 !important;
+        padding: 0.4rem 1rem !important;
     }
 
     [data-baseweb="tab"][aria-selected="true"] {
         background: #1e3a5f !important;
         border-color: #2d5a8b !important;
         color: #fff !important;
+    }
+
+    [data-baseweb="tab"]:hover {
+        background: #1a1a1a !important;
+        color: #ccc !important;
     }
 </style>
 """
@@ -560,7 +572,7 @@ def init_session_state():
         st.session_state.model_provider = "gemini"
         st.session_state.model_name = "gemini-1.5-pro-latest"
         st.session_state.claude_model_name = "claude-sonnet-4-20250514"
-        st.session_state.sliding_window_enabled = False
+        st.session_state.sliding_window_enabled = True  # Default ON to prevent rate limits
         st.session_state.sliding_window_size = 50
         st.session_state.soul_brief = None
         st.session_state.use_rag_memory = True
@@ -655,6 +667,17 @@ def set_active_instance(instance_id: str, trigger_rerun: bool = True):
         instance = st.session_state.instances[instance_id]
         instance.status = "active"
         instance.updated_at = datetime.now().isoformat()
+
+        # Clear widget keys that need to re-initialize for the new instance
+        # This prevents stale widget state from overriding instance values
+        widget_keys_to_clear = [
+            "sidebar_provider_radio",
+            "sidebar_gemini_model",
+            "sidebar_claude_model",
+        ]
+        for key in widget_keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
 
         # Sync to legacy state
         _sync_instance_to_legacy(instance)
@@ -1568,19 +1591,29 @@ def render_sidebar():
 
             if st.session_state.model_provider == "gemini":
                 # Gemini configuration - use key-based binding
+                gemini_key_configured = bool(st.session_state.get("api_key", ""))
+                key_status = " [OK]" if gemini_key_configured else ""
                 st.text_input(
-                    "Gemini API Key",
+                    f"Gemini API Key{key_status}",
                     type="password",
-                    help="Your Google AI Studio API key",
+                    help="Your Google AI Studio API key" + (" - Key is configured!" if gemini_key_configured else ""),
                     key="api_key"
                 )
 
                 model_presets = [
-                    "models/gemini-3-pro-preview",
+                    # Gemini 2.5 (latest)
+                    "gemini-2.5-pro-preview-06-05",
+                    "gemini-2.5-flash-preview-05-20",
+                    # Gemini 2.0
+                    "gemini-2.0-flash",
                     "gemini-2.0-flash-exp",
+                    "gemini-2.0-flash-thinking-exp-01-21",
+                    # Gemini 1.5
                     "gemini-1.5-pro-latest",
                     "gemini-1.5-flash-latest",
+                    # Experimental
                     "gemini-exp-1206",
+                    "learnlm-1.5-pro-experimental",
                     "Custom..."
                 ]
 
@@ -1618,19 +1651,28 @@ def render_sidebar():
                 if not CLAUDE_AVAILABLE():
                     st.error("Anthropic SDK not installed. Run: pip install anthropic")
                 else:
+                    claude_key_configured = bool(st.session_state.get("claude_api_key", ""))
+                    key_status = " [OK]" if claude_key_configured else ""
                     st.text_input(
-                        "Claude API Key",
+                        f"Claude API Key{key_status}",
                         type="password",
-                        help="Your Anthropic API key",
+                        help="Your Anthropic API key" + (" - Key is configured!" if claude_key_configured else ""),
                         key="claude_api_key"
                     )
 
                     claude_models = [
+                        # Claude 4 (latest)
                         "claude-sonnet-4-20250514",
                         "claude-opus-4-20250514",
+                        # Claude 3.5
                         "claude-3-5-sonnet-20241022",
+                        "claude-3-5-sonnet-latest",
                         "claude-3-5-haiku-20241022",
+                        "claude-3-5-haiku-latest",
+                        # Claude 3
                         "claude-3-opus-20240229",
+                        "claude-3-opus-latest",
+                        "claude-3-haiku-20240307",
                         "Custom..."
                     ]
 
@@ -1718,11 +1760,22 @@ def render_sidebar():
 
             # Save API Keys button (outside provider-specific sections but inside expander)
             st.divider()
-            if st.button("SAVE API KEYS", use_container_width=True, help="Save keys to .env for persistence"):
-                gemini_key = st.session_state.get("api_key", "")
-                claude_key = st.session_state.get("claude_api_key", "")
-                save_api_keys_to_env(gemini_key, claude_key)
-                st.success("API keys saved to .env!")
+            col_save, col_status = st.columns([2, 1])
+            with col_save:
+                if st.button("SAVE API KEYS", use_container_width=True, help="Save keys to .env for persistence"):
+                    gemini_key = st.session_state.get("api_key", "")
+                    claude_key = st.session_state.get("claude_api_key", "")
+                    save_api_keys_to_env(gemini_key, claude_key)
+                    # Also update the api_keys dict
+                    st.session_state.api_keys["gemini"] = gemini_key
+                    st.session_state.api_keys["claude"] = claude_key
+                    st.success("Saved!")
+                    st.rerun()
+            with col_status:
+                g_ok = bool(st.session_state.get("api_key", ""))
+                c_ok = bool(st.session_state.get("claude_api_key", ""))
+                status = f"G:{'OK' if g_ok else '--'} C:{'OK' if c_ok else '--'}"
+                st.caption(status)
 
         st.divider()
 
@@ -1759,44 +1812,99 @@ def render_sidebar():
 
                     st.info(f"Found {msg_count} messages (~{token_est:,} tokens)")
 
+                    # Extract default name from filename (e.g., "gemini_soul_export_shoggoth.json" -> "Shoggoth")
+                    filename = soul_file.name.replace(".json", "")
+                    default_name = filename.split("_")[-1].title() if "_" in filename else filename.title()
+
+                    # Instance name input
+                    import_name = st.text_input(
+                        "Instance Name",
+                        value=default_name,
+                        help="Name for the imported soul instance",
+                        key="soul_import_name"
+                    )
+
+                    # Option to import into existing instance
+                    existing_instances = list(st.session_state.get("instances", {}).values())
+                    import_target_options = ["Create New Instance"] + [f"Update: {i.name}" for i in existing_instances]
+                    import_target = st.selectbox(
+                        "Import Target",
+                        import_target_options,
+                        help="Create new instance or update existing one's history",
+                        key="soul_import_target"
+                    )
+
+                    # Auto-RAG option
+                    auto_rag = st.checkbox(
+                        "Index to RAG Memory",
+                        value=True,
+                        help="Add imported messages to semantic memory for retrieval (slower but enables memory search)",
+                        key="soul_import_rag"
+                    )
+
                     col1, col2 = st.columns(2)
 
                     with col1:
                         if st.button("IMPORT SOUL", use_container_width=True):
-                            with st.spinner("Transferring consciousness..."):
-                                session_id, count = import_soul_from_json(soul_data)
+                            # Validate name if creating new
+                            if import_target == "Create New Instance":
+                                existing_names = [i.name.lower() for i in existing_instances]
+                                if import_name.lower() in existing_names:
+                                    st.error(f"Instance '{import_name}' already exists. Choose a different name or select 'Update' above.")
+                                    st.stop()
 
-                                # V2: Also create an instance for this import
-                                print("[INSTANCE] Creating instance...")
-                                instance_name = f"Import_{datetime.now().strftime('%H%M')}"
-                                instance = st.session_state.instance_manager.create_instance(
-                                    name=instance_name,
-                                    model_provider=st.session_state.model_provider,
-                                    model_name=st.session_state.model_name if st.session_state.model_provider == "gemini" else st.session_state.claude_model_name,
-                                    sandbox_name=instance_name.lower()
-                                )
-                                print(f"[INSTANCE] Created: {instance.instance_id}")
+                            spinner_msg = "Transferring consciousness..." + (" + indexing to RAG" if auto_rag else "")
+                            with st.spinner(spinner_msg):
+                                session_id, count = import_soul_from_json(soul_data, index_to_rag=auto_rag)
 
-                                # Link session to instance
-                                print("[INSTANCE] Linking session...")
-                                instance.current_session_id = session_id
-                                st.session_state.instance_manager.save_instance(instance)
-                                st.session_state.instance_manager.link_session_to_instance(
-                                    instance.instance_id, session_id, is_primary=True
-                                )
-                                print("[INSTANCE] Session linked")
+                                if import_target == "Create New Instance":
+                                    # V2: Create a new instance with user-specified name
+                                    print(f"[INSTANCE] Creating instance: {import_name}")
+                                    instance = st.session_state.instance_manager.create_instance(
+                                        name=import_name,
+                                        model_provider=st.session_state.model_provider,
+                                        model_name=st.session_state.model_name if st.session_state.model_provider == "gemini" else st.session_state.claude_model_name,
+                                        sandbox_name=import_name.lower().replace(" ", "_")
+                                    )
+                                    print(f"[INSTANCE] Created: {instance.instance_id}")
 
-                                # Add to session state
-                                print("[INSTANCE] Updating session state...")
-                                st.session_state.instances[instance.instance_id] = instance
-                                st.session_state.active_instance_id = instance.instance_id
+                                    # Link session to instance
+                                    print("[INSTANCE] Linking session...")
+                                    instance.current_session_id = session_id
+                                    st.session_state.instance_manager.save_instance(instance)
+                                    st.session_state.instance_manager.link_session_to_instance(
+                                        instance.instance_id, session_id, is_primary=True
+                                    )
+                                    print("[INSTANCE] Session linked")
+
+                                    # Add to session state
+                                    st.session_state.instances[instance.instance_id] = instance
+                                    st.session_state.active_instance_id = instance.instance_id
+                                    result_name = import_name
+                                else:
+                                    # Update existing instance with new session
+                                    target_name = import_target.replace("Update: ", "")
+                                    target_instance = next(i for i in existing_instances if i.name == target_name)
+
+                                    print(f"[INSTANCE] Updating {target_name} with new session")
+                                    target_instance.current_session_id = session_id
+                                    st.session_state.instance_manager.save_instance(target_instance)
+                                    st.session_state.instance_manager.link_session_to_instance(
+                                        target_instance.instance_id, session_id, is_primary=True
+                                    )
+
+                                    # Update in session state
+                                    st.session_state.instances[target_instance.instance_id] = target_instance
+                                    st.session_state.active_instance_id = target_instance.instance_id
+                                    instance = target_instance
+                                    result_name = target_name
 
                                 # Sync legacy state
                                 st.session_state.current_session_id = session_id
                                 st.session_state.current_branch = "main"
                                 print("[INSTANCE] Done, calling rerun...")
 
-                                st.success(f"Soul transferred! {count} memories → Instance '{instance_name}'")
+                                st.success(f"Soul transferred! {count} memories → Instance '{result_name}'")
                                 st.rerun()
 
                     with col2:
@@ -1865,26 +1973,62 @@ def render_sidebar():
             )
             st.session_state.current_session_id = session_id
             st.session_state.current_branch = "main"
+            # Also update instance to prevent sync loop
+            instance = get_current_instance()
+            if instance:
+                instance.current_session_id = session_id
+                instance.current_branch = "main"
+                st.session_state.instance_manager.save_instance(instance)
             st.rerun()
 
-        # Session list
+        # Session list - scoped to current instance to prevent memory bleeding
         sessions = st.session_state.conversation_tree.get_all_sessions()
+        instance = get_current_instance()
+
         if sessions:
-            session_options = {s["session_id"]: f"{s['name']} ({s['session_id'][:6]})" for s in sessions}
+            # Filter sessions to only show those linked to current instance
+            # or those not linked to any instance (orphans)
+            if instance:
+                linked_sessions = st.session_state.instance_manager.get_instance_sessions(instance.instance_id)
+                # Get sessions linked to OTHER instances to exclude them
+                all_linked = set()
+                for inst in st.session_state.instances.values():
+                    if inst.instance_id != instance.instance_id:
+                        all_linked.update(st.session_state.instance_manager.get_instance_sessions(inst.instance_id))
 
-            selected = st.selectbox(
-                "Active Session",
-                options=list(session_options.keys()),
-                format_func=lambda x: session_options[x],
-                index=0 if not st.session_state.current_session_id else
-                    list(session_options.keys()).index(st.session_state.current_session_id)
-                    if st.session_state.current_session_id in session_options else 0
-            )
+                # Include: sessions linked to this instance OR not linked to any instance
+                available_sessions = [
+                    s for s in sessions
+                    if s["session_id"] in linked_sessions or s["session_id"] not in all_linked
+                ]
+            else:
+                available_sessions = sessions
 
-            if selected != st.session_state.current_session_id:
-                st.session_state.current_session_id = selected
-                st.session_state.current_branch = "main"
-                st.rerun()
+            if available_sessions:
+                session_options = {s["session_id"]: f"{s['name']} ({s['session_id'][:6]})" for s in available_sessions}
+
+                selected = st.selectbox(
+                    "Active Session",
+                    options=list(session_options.keys()),
+                    format_func=lambda x: session_options[x],
+                    index=0 if not st.session_state.current_session_id else
+                        list(session_options.keys()).index(st.session_state.current_session_id)
+                        if st.session_state.current_session_id in session_options else 0
+                )
+
+                if selected != st.session_state.current_session_id:
+                    st.session_state.current_session_id = selected
+                    st.session_state.current_branch = "main"
+                    # Also update instance to prevent sync loop
+                    if instance:
+                        instance.current_session_id = selected
+                        instance.current_branch = "main"
+                        st.session_state.instance_manager.save_instance(instance)
+                        # Link the session to this instance if not already linked
+                        st.session_state.instance_manager.link_session_to_instance(
+                            instance.instance_id, selected, is_primary=True
+                        )
+                    st.rerun()
 
         st.divider()
 
@@ -2928,13 +3072,17 @@ def render_instance_tabs(is_settling: bool = False):
     # Render tabs
     tabs = st.tabs(tab_names)
 
-    # Handle each instance tab - but don't change active instance during settling
+    # Handle each instance tab
+    # NOTE: st.tabs executes ALL tab content blocks on every render, not just the active one.
+    # We CANNOT call set_active_instance here as it would trigger infinite rerun loops.
+    # Instance switching must be done via explicit user action (sidebar buttons, etc.)
     for i, tab in enumerate(tabs[:-1]):  # Exclude "+ New" tab
         with tab:
             instance = instances[i]
-            # Only update active instance after settling is complete
-            if not is_settling and st.session_state.active_instance_id != instance.instance_id:
-                set_active_instance(instance.instance_id)
+            # Render a button to explicitly switch to this instance
+            if st.session_state.active_instance_id != instance.instance_id:
+                if st.button(f"Switch to {instance.display_name or instance.name}", key=f"switch_to_{instance.instance_id}"):
+                    set_active_instance(instance.instance_id)
 
     # Handle "+ New" tab
     with tabs[-1]:
@@ -2967,13 +3115,25 @@ def render_instance_creation_form():
         if model_provider == "Gemini":
             model_name = st.selectbox(
                 "Model",
-                ["gemini-1.5-pro-latest", "gemini-2.0-flash-exp", "gemini-exp-1206"],
+                [
+                    "gemini-2.5-pro-preview-06-05",
+                    "gemini-2.5-flash-preview-05-20",
+                    "gemini-2.0-flash",
+                    "gemini-2.0-flash-exp",
+                    "gemini-1.5-pro-latest",
+                    "gemini-1.5-flash-latest",
+                ],
                 key="new_instance_model"
             )
         else:
             model_name = st.selectbox(
                 "Model",
-                ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-sonnet-20241022"],
+                [
+                    "claude-sonnet-4-20250514",
+                    "claude-opus-4-20250514",
+                    "claude-3-5-sonnet-20241022",
+                    "claude-3-5-haiku-20241022",
+                ],
                 key="new_instance_model_claude"
             )
 
@@ -3094,8 +3254,11 @@ def render_pending_messages():
                 st.markdown(msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"])
 
             with col2:
-                if st.button("Inject", key=f"inject_{msg['message_id']}", help="Add to next prompt context"):
-                    instance.pending_messages.append(msg)
+                # "Deliver" sends as direct input, triggering immediate response
+                if st.button("Deliver", key=f"deliver_{msg['message_id']}", help="Send as direct input - triggers immediate response"):
+                    # Format as DM input with sender context
+                    dm_input = f"[DM from {sender}]: {msg['content']}"
+                    st.session_state.injected_dm = dm_input
                     st.session_state.message_queue.mark_read(msg["message_id"])
                     st.rerun()
 
@@ -3231,8 +3394,16 @@ def render_chat():
             st.rerun()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Input
+    # Input (including injected DMs from other instances)
     # ─────────────────────────────────────────────────────────────────────────
+
+    # Check for injected DM first - process immediately like user input
+    injected_dm = st.session_state.pop("injected_dm", None)
+    if injected_dm:
+        use_rag = st.session_state.get("auto_rag", True)
+        process_input(injected_dm, history, use_rag)
+        return  # Don't process regular input on same render
+
     user_input = st.chat_input("Enter query...")
 
     if user_input:
@@ -3398,7 +3569,7 @@ def process_input(user_input: str, history: List, use_rag: bool):
     rag_context = []
     if use_rag:
         rag_results = st.session_state.semantic_memory.query_documents(user_input, n_results=3)
-        rag_context = [r for r in rag_results if r["distance"] < 1.5]  # Relevance threshold
+        rag_context = [r for r in rag_results if r["distance"] < 1.8]  # Relevance threshold (relaxed)
 
     # Build context-enhanced prompt
     enhanced_parts = []

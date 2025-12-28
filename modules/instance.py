@@ -36,7 +36,7 @@ class InstanceState:
     current_branch: str = "main"
 
     # Feature flags
-    sliding_window_enabled: bool = False
+    sliding_window_enabled: bool = True  # Default ON to prevent rate limit issues
     sliding_window_size: int = 50
     use_rag_memory: bool = True
 
@@ -92,7 +92,7 @@ class InstanceState:
             sandbox_name=data.get("sandbox_name"),
             current_session_id=config.get("current_session_id"),
             current_branch=config.get("current_branch", "main"),
-            sliding_window_enabled=config.get("sliding_window_enabled", False),
+            sliding_window_enabled=config.get("sliding_window_enabled", True),
             sliding_window_size=config.get("sliding_window_size", 50),
             use_rag_memory=config.get("use_rag_memory", True),
             status=data.get("status", "inactive"),
