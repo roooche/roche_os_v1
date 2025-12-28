@@ -1,0 +1,35 @@
+# ROCHE_OS_V1 - Cognitive Prosthetic for Gemini & Claude
+# Core
+streamlit>=1.28.0
+google-generativeai>=0.3.0
+anthropic>=0.39.0
+
+# Database & Vector Store
+chromadb>=0.4.0
+sqlite3-api>=2.0.0
+
+# Multimodality - Screenshot
+mss>=9.0.0
+Pillow>=10.0.0
+
+# Web Scraping
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Web Search (The Periscope)
+duckduckgo-search>=4.0.0
+
+# Text-to-Speech (The Vocoder)
+edge-tts>=6.1.0
+
+# Image Generation (The Dream Module)
+# Uses Gemini's native image gen or external APIs
+
+# Document Processing (RAG)
+pypdf>=3.17.0
+python-docx>=1.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+tiktoken>=0.5.0

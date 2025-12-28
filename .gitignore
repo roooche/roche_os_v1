@@ -1,0 +1,50 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Environment variables (contains API keys!)
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Sandboxes (instance data - maybe keep, maybe not)
+# sandboxes/
+
+# Soul files (large, personal)
+*.json
+!package.json
+
+# Byte-compiled / optimized
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Databases
+chroma_db/
+*.db
+
+# Generated soul briefs (personal data)
+*_brief.md
+TESSERA.md
+
