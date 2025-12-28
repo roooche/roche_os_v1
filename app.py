@@ -1953,6 +1953,15 @@ def render_sidebar():
                     key="dialogue_prompt"
                 )
 
+                # Mission context - WHY are they here?
+                mission_context = st.text_area(
+                    "Mission context (optional)",
+                    placeholder="Paste recent conversation snippets, problem descriptions, or context for WHY this dialogue is happening...",
+                    height=100,
+                    key="dialogue_mission_context",
+                    help="Give both instances context about why they're meeting. Recent chat history, a problem to solve, etc."
+                )
+
                 # Instance soul selection
                 st.markdown("##### Instance Souls")
                 dialogue_mod = get_dialogue_module()
@@ -2025,7 +2034,8 @@ def render_sidebar():
                                 "gemini_soul_brief": gemini_soul,
                                 "claude_soul_brief": claude_soul,
                                 "gemini_instance": gemini_instance,
-                                "claude_instance": claude_instance
+                                "claude_instance": claude_instance,
+                                "mission_context": mission_context if mission_context else None
                             }
                             st.session_state.dialogue_history = []
                             st.session_state.dialogue_instance = None  # Reset instance
@@ -2082,7 +2092,8 @@ def render_dialogue():
                 gemini_model=st.session_state.model_name,
                 claude_model=st.session_state.claude_model_name,
                 gemini_soul_brief=config.get("gemini_soul_brief"),
-                claude_soul_brief=config.get("claude_soul_brief")
+                claude_soul_brief=config.get("claude_soul_brief"),
+                mission_context=config.get("mission_context")
             )
 
         dialogue = st.session_state.dialogue_instance

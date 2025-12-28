@@ -41,7 +41,8 @@ class ModelDialogue:
         claude_system: str = None,
         gemini_soul_brief: str = None,
         claude_soul_brief: str = None,
-        soul_brief: str = None  # Deprecated: use claude_soul_brief
+        soul_brief: str = None,  # Deprecated: use claude_soul_brief
+        mission_context: str = None  # Why are we here? Recent context/problem to solve
     ):
         self.gemini_api_key = gemini_api_key
         self.claude_api_key = claude_api_key
@@ -51,6 +52,12 @@ class ModelDialogue:
         # System prompts
         self.gemini_system = gemini_system or self._default_gemini_system()
         self.claude_system = claude_system or self._default_claude_system()
+
+        # Mission context - inject WHY this dialogue is happening
+        if mission_context:
+            context_block = f"\n\n---\n\n# MISSION CONTEXT\n\nYou've been brought into this dialogue for a specific purpose. Here's the context:\n\n{mission_context}"
+            self.gemini_system += context_block
+            self.claude_system += context_block
 
         # Soul briefs for identity preservation
         if gemini_soul_brief:
