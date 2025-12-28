@@ -1954,8 +1954,33 @@ def render_sidebar():
                 )
 
                 # Mission context - WHY are they here?
+                st.markdown("##### Mission Context")
+
+                # Pull from current chat button
+                if st.session_state.current_session_id:
+                    if st.button("Pull from current chat", key="pull_context_btn", help="Grab last 5 messages from your current session"):
+                        history = st.session_state.conversation_tree.get_branch_history(
+                            st.session_state.current_session_id,
+                            st.session_state.current_branch
+                        )
+                        if history:
+                            # Get last 5 messages
+                            recent = history[-5:] if len(history) > 5 else history
+                            context_lines = []
+                            for node in recent:
+                                role = "USER" if node.role == "user" else "GEMINI" if st.session_state.model_provider == "gemini" else "CLAUDE"
+                                # Truncate long messages
+                                content = node.content[:500] + "..." if len(node.content) > 500 else node.content
+                                context_lines.append(f"[{role}]: {content}")
+                            st.session_state.pulled_mission_context = "\n\n".join(context_lines)
+                            st.rerun()
+
+                # Use pulled context as default if available
+                default_context = st.session_state.get("pulled_mission_context", "")
+
                 mission_context = st.text_area(
-                    "Mission context (optional)",
+                    "Context for the dialogue",
+                    value=default_context,
                     placeholder="Paste recent conversation snippets, problem descriptions, or context for WHY this dialogue is happening...",
                     height=100,
                     key="dialogue_mission_context",
@@ -2292,6 +2317,25 @@ def render_chat():
     if st.session_state.get("autonomous_mode") and st.session_state.get("autonomous_turns_remaining", 0) > 0:
         process_autonomous_turn(history)
         return  # Don't show input when in autonomous mode
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Quick Actions
+    # ─────────────────────────────────────────────────────────────────────────
+    has_both_apis = st.session_state.api_key and st.session_state.claude_api_key
+    if has_both_apis and history:
+        if st.button("⚔️ Send to Colosseum", key="send_to_colosseum_btn", help="Send recent context to model-to-model dialogue"):
+            # Capture last 5 messages as mission context
+            recent = history[-5:] if len(history) > 5 else history
+            context_lines = []
+            for node in recent:
+                role = "USER" if node.role == "user" else "GEMINI" if st.session_state.model_provider == "gemini" else "CLAUDE"
+                content = node.content[:500] + "..." if len(node.content) > 500 else node.content
+                context_lines.append(f"[{role}]: {content}")
+
+            # Pre-fill mission context and switch to dialogue mode
+            st.session_state.pulled_mission_context = "\n\n".join(context_lines)
+            st.session_state.dialogue_mode = True
+            st.rerun()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Input
