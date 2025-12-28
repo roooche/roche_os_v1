@@ -1988,7 +1988,7 @@ def render_sidebar():
                 )
 
                 # Instance soul selection
-                st.markdown("##### Instance Souls")
+                st.markdown("##### Soul Loading")
                 dialogue_mod = get_dialogue_module()
                 available_souls = dialogue_mod.list_available_souls()
 
@@ -1996,18 +1996,21 @@ def render_sidebar():
                     soul_options = ["(base model)"] + available_souls
 
                     gemini_instance = st.selectbox(
-                        "Gemini instance",
+                        "🔷 GEMINI gets soul:",
                         soul_options,
                         key="gemini_instance_select",
-                        help="Load a saved soul for Gemini"
+                        help="Which personality/soul to load INTO the Gemini model"
                     )
 
                     claude_instance = st.selectbox(
-                        "Claude instance",
+                        "🟣 CLAUDE gets soul:",
                         soul_options,
                         key="claude_instance_select",
-                        help="Load a saved soul for Claude"
+                        help="Which personality/soul to load INTO the Claude model"
                     )
+
+                    # Confirmation preview
+                    st.caption(f"**Matchup:** 🔷 Gemini({gemini_instance}) vs 🟣 Claude({claude_instance})")
                 else:
                     st.caption("No saved souls found. Upload below or save souls to `souls/` folder.")
                     gemini_instance = "(base model)"
