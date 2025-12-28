@@ -415,8 +415,71 @@ CUSTOM_CSS = """
         background-color: #111 !important;
         border: 1px solid #333 !important;
     }
+
+    /* Sticky tabs at top - instance switcher always visible */
+    [data-testid="stTabs"],
+    .stTabs {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 999 !important;
+        background: #0a0a0a !important;
+        padding: 0.5rem 0 !important;
+        border-bottom: 1px solid #222;
+    }
+
+    [data-baseweb="tab-list"] {
+        background: #0a0a0a !important;
+        gap: 4px;
+    }
+
+    [data-baseweb="tab"] {
+        background: #111 !important;
+        border: 1px solid #333 !important;
+        border-radius: 4px 4px 0 0 !important;
+        color: #888 !important;
+    }
+
+    [data-baseweb="tab"][aria-selected="true"] {
+        background: #1e3a5f !important;
+        border-color: #2d5a8b !important;
+        color: #fff !important;
+    }
 </style>
 """
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API KEY PERSISTENCE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_api_keys_to_env(gemini_key: str = None, claude_key: str = None):
+    """Save API keys to .env file for persistence across sessions."""
+    env_path = Path(__file__).parent / ".env"
+
+    # Read existing .env
+    existing = {}
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if '=' in line and not line.strip().startswith('#'):
+                key, val = line.split('=', 1)
+                existing[key.strip()] = val.strip()
+
+    # Update with new values (only if provided)
+    if gemini_key is not None:
+        existing['GEMINI_API_KEY'] = gemini_key
+    if claude_key is not None:
+        existing['ANTHROPIC_API_KEY'] = claude_key
+
+    # Write back
+    lines = [
+        "# ROCHE_OS API Keys",
+        "# These are loaded automatically on startup",
+        "",
+    ]
+    for key, val in existing.items():
+        lines.append(f"{key}={val}")
+
+    env_path.write_text('\n'.join(lines) + '\n')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -527,10 +590,11 @@ def _load_persisted_instances():
                 except Exception:
                     pass
 
-        # If we have instances, activate the most recently used one
+        # If we have instances, activate the most recently used one (no rerun on initial load)
         if all_instances:
             st.session_state.active_instance_id = all_instances[0].instance_id
             _sync_instance_to_legacy(all_instances[0])
+            # Don't rerun here - this is initial load
     except Exception as e:
         # Database might not have the tables yet
         pass
@@ -541,16 +605,31 @@ def _sync_instance_to_legacy(instance):
     if instance is None:
         return
 
+    # These are safe to set directly (no widgets with these keys)
     st.session_state.model_provider = instance.model_provider
     st.session_state.model_name = instance.model_name
     st.session_state.soul_brief = instance.soul_brief
     st.session_state.current_session_id = instance.current_session_id
     st.session_state.current_branch = instance.current_branch
-    st.session_state.sliding_window_enabled = instance.sliding_window_enabled
-    st.session_state.sliding_window_size = instance.sliding_window_size
-    st.session_state.use_rag_memory = instance.use_rag_memory
     st.session_state.pending_screenshot = instance.pending_screenshot
     st.session_state.pending_scraped = instance.pending_scraped
+
+    # These have widgets with matching keys - only set if not yet instantiated
+    # (Streamlit throws error if widget already owns the key)
+    try:
+        st.session_state.sliding_window_enabled = instance.sliding_window_enabled
+    except Exception:
+        pass  # Widget already instantiated, it will read from instance instead
+
+    try:
+        st.session_state.sliding_window_size = instance.sliding_window_size
+    except Exception:
+        pass
+
+    try:
+        st.session_state.use_rag_memory = instance.use_rag_memory
+    except Exception:
+        pass
 
     if instance.sandbox_name:
         st.session_state.current_sandbox = instance.sandbox_name
@@ -568,9 +647,10 @@ def get_current_instance():
     return None
 
 
-def set_active_instance(instance_id: str):
+def set_active_instance(instance_id: str, trigger_rerun: bool = True):
     """Switch to a different instance."""
     if instance_id in st.session_state.get("instances", {}):
+        old_instance_id = st.session_state.get("active_instance_id")
         st.session_state.active_instance_id = instance_id
         instance = st.session_state.instances[instance_id]
         instance.status = "active"
@@ -581,6 +661,10 @@ def set_active_instance(instance_id: str):
 
         # Save updated status
         st.session_state.instance_manager.save_instance(instance)
+
+        # Rerun to refresh UI if instance actually changed
+        if trigger_rerun and old_instance_id != instance_id:
+            st.rerun()
 
 
 def get_gemini_model(with_tools: bool = True, use_google_search: bool = True):
@@ -1632,6 +1716,14 @@ def render_sidebar():
                         key="debug_api_calls"
                     )
 
+            # Save API Keys button (outside provider-specific sections but inside expander)
+            st.divider()
+            if st.button("SAVE API KEYS", use_container_width=True, help="Save keys to .env for persistence"):
+                gemini_key = st.session_state.get("api_key", "")
+                claude_key = st.session_state.get("claude_api_key", "")
+                save_api_keys_to_env(gemini_key, claude_key)
+                st.success("API keys saved to .env!")
+
         st.divider()
 
         # ─────────────────────────────────────────────────────────────────────
@@ -2500,7 +2592,7 @@ What would you like to do?"""
         st.caption("Let the models converse")
 
         # Check if both APIs are configured
-        has_both_apis = st.session_state.api_key and st.session_state.claude_api_key
+        has_both_apis = st.session_state.get("api_key") and st.session_state.get("claude_api_key")
 
         if not has_both_apis:
             st.warning("Configure both Gemini and Claude API keys to enable")
@@ -3122,7 +3214,7 @@ def render_chat():
     # ─────────────────────────────────────────────────────────────────────────
     # Quick Actions
     # ─────────────────────────────────────────────────────────────────────────
-    has_both_apis = st.session_state.api_key and st.session_state.claude_api_key
+    has_both_apis = st.session_state.get("api_key") and st.session_state.get("claude_api_key")
     if has_both_apis and history:
         if st.button("⚔️ Send to Colosseum", key="send_to_colosseum_btn", help="Send recent context to model-to-model dialogue"):
             # Capture last 5 messages as mission context
