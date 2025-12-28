@@ -2134,15 +2134,32 @@ def render_dialogue():
             st.session_state.dialogue_running = False
             st.success(f"Dialogue complete! {target_turns} exchanges.")
 
-            # Offer to save transcript
-            if st.button("Save Transcript"):
-                transcript = dialogue.get_transcript()
-                st.download_button(
-                    "Download",
-                    transcript,
-                    file_name="dialogue_transcript.md",
-                    mime="text/markdown"
-                )
+            # Auto-save transcript
+            transcript = dialogue.get_transcript()
+            logs_dir = Path("colosseum_logs")
+            logs_dir.mkdir(exist_ok=True)
+
+            gemini_name = config.get("gemini_instance", "gemini") or "gemini"
+            claude_name = config.get("claude_instance", "claude") or "claude"
+            if gemini_name == "(base model)":
+                gemini_name = "gemini"
+            if claude_name == "(base model)":
+                claude_name = "claude"
+
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"{timestamp}_{gemini_name}_vs_{claude_name}.md"
+            save_path = logs_dir / filename
+            save_path.write_text(transcript, encoding="utf-8")
+            st.success(f"Saved to `{save_path}`")
+
+            # Also offer download
+            st.download_button(
+                "Download Transcript",
+                transcript,
+                file_name=filename,
+                mime="text/markdown"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
