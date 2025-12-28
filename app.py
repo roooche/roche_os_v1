@@ -618,30 +618,26 @@ def _sync_instance_to_legacy(instance):
         return
 
     # These are safe to set directly (no widgets with these keys)
-    st.session_state.model_provider = instance.model_provider
-    st.session_state.model_name = instance.model_name
     st.session_state.soul_brief = instance.soul_brief
     st.session_state.current_session_id = instance.current_session_id
     st.session_state.current_branch = instance.current_branch
     st.session_state.pending_screenshot = instance.pending_screenshot
     st.session_state.pending_scraped = instance.pending_scraped
 
-    # These have widgets with matching keys - only set if not yet instantiated
+    # These have widgets with matching keys - only set if widget not yet instantiated
     # (Streamlit throws error if widget already owns the key)
-    try:
-        st.session_state.sliding_window_enabled = instance.sliding_window_enabled
-    except Exception:
-        pass  # Widget already instantiated, it will read from instance instead
+    def safe_set(key, value):
+        try:
+            st.session_state[key] = value
+        except Exception:
+            pass  # Widget already instantiated
 
-    try:
-        st.session_state.sliding_window_size = instance.sliding_window_size
-    except Exception:
-        pass
-
-    try:
-        st.session_state.use_rag_memory = instance.use_rag_memory
-    except Exception:
-        pass
+    safe_set("model_provider", instance.model_provider)
+    safe_set("model_name", instance.model_name)
+    safe_set("claude_model_name", instance.model_name if instance.model_provider == "claude" else st.session_state.get("claude_model_name"))
+    safe_set("sliding_window_enabled", instance.sliding_window_enabled)
+    safe_set("sliding_window_size", instance.sliding_window_size)
+    safe_set("use_rag_memory", instance.use_rag_memory)
 
     if instance.sandbox_name:
         st.session_state.current_sandbox = instance.sandbox_name
@@ -674,6 +670,8 @@ def set_active_instance(instance_id: str, trigger_rerun: bool = True):
             "sidebar_provider_radio",
             "sidebar_gemini_model",
             "sidebar_claude_model",
+            "model_name",  # Custom model text input
+            "claude_model_name",
         ]
         for key in widget_keys_to_clear:
             if key in st.session_state:
