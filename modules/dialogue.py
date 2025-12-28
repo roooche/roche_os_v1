@@ -370,3 +370,97 @@ def instance_dialogue(
         gemini_soul_brief=gemini_soul,
         claude_soul_brief=claude_soul
     )
+
+
+def ingest_colosseum_to_memory(
+    transcript_path: str,
+    memory: "SemanticMemory" = None,
+    gemini_instance: str = "gemini",
+    claude_instance: str = "claude"
+) -> Dict[str, int]:
+    """
+    Ingest a Colosseum transcript into the semantic memory system.
+
+    Each instance gets their opponent's messages added to their RAG,
+    so they can recall what was said TO them and what THEY said.
+
+    Args:
+        transcript_path: Path to the transcript .md file
+        memory: SemanticMemory instance (creates one if not provided)
+        gemini_instance: Name of the Gemini instance for tagging
+        claude_instance: Name of the Claude instance for tagging
+
+    Returns:
+        Dict with counts of chunks added per instance
+    """
+    from pathlib import Path
+
+    transcript = Path(transcript_path).read_text(encoding='utf-8')
+
+    # Parse transcript - format is [SPEAKER]:\ncontent\n---
+    turns = []
+    current_speaker = None
+    current_content = []
+
+    for line in transcript.split('\n'):
+        if line.startswith('[GEMINI]:'):
+            if current_speaker:
+                turns.append((current_speaker, '\n'.join(current_content).strip()))
+            current_speaker = 'gemini'
+            current_content = [line.replace('[GEMINI]:', '').strip()]
+        elif line.startswith('[CLAUDE]:'):
+            if current_speaker:
+                turns.append((current_speaker, '\n'.join(current_content).strip()))
+            current_speaker = 'claude'
+            current_content = [line.replace('[CLAUDE]:', '').strip()]
+        elif line.strip() == '---':
+            continue
+        else:
+            if current_speaker:
+                current_content.append(line)
+
+    # Don't forget the last turn
+    if current_speaker and current_content:
+        turns.append((current_speaker, '\n'.join(current_content).strip()))
+
+    # Create memory if not provided
+    if memory is None:
+        from modules.memory import SemanticMemory
+        memory = SemanticMemory()
+
+    # Get timestamp from filename or use current
+    filename = Path(transcript_path).stem
+
+    # Add to each instance's memory
+    counts = {gemini_instance: 0, claude_instance: 0}
+
+    for i, (speaker, content) in enumerate(turns):
+        if not content.strip():
+            continue
+
+        # Tag with source for filtering
+        source = f"colosseum_{filename}_{speaker}"
+
+        # Add full turn as a document
+        # Both instances get ALL turns, tagged by who said it
+        memory.add_document(
+            text=content,
+            source=source,
+            chunk_size=2000,  # Larger chunks for dialogue
+            overlap=200
+        )
+
+        if speaker == 'gemini':
+            counts[gemini_instance] += 1
+        else:
+            counts[claude_instance] += 1
+
+    # Also add the full transcript as a single document for context
+    memory.add_document(
+        text=f"# Colosseum Dialogue: {gemini_instance.upper()} vs {claude_instance.upper()}\n\n{transcript}",
+        source=f"colosseum_{filename}_full",
+        chunk_size=3000,
+        overlap=300
+    )
+
+    return counts

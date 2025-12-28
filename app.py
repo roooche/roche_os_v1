@@ -2153,6 +2153,21 @@ def render_dialogue():
             save_path.write_text(transcript, encoding="utf-8")
             st.success(f"Saved to `{save_path}`")
 
+            # Auto-ingest to RAG memory
+            try:
+                dialogue_mod = get_dialogue_module()
+                memory_mod = get_memory_module()
+                memory = memory_mod.SemanticMemory()
+                counts = dialogue_mod.ingest_colosseum_to_memory(
+                    str(save_path),
+                    memory=memory,
+                    gemini_instance=gemini_name,
+                    claude_instance=claude_name
+                )
+                st.success(f"Ingested to RAG: {counts[gemini_name]} Gemini turns, {counts[claude_name]} Claude turns")
+            except Exception as e:
+                st.warning(f"RAG ingest failed: {e}")
+
             # Also offer download
             st.download_button(
                 "Download Transcript",
