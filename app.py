@@ -664,6 +664,10 @@ def set_active_instance(instance_id: str, trigger_rerun: bool = True):
         instance.status = "active"
         instance.updated_at = datetime.now().isoformat()
 
+        # Preserve API keys before clearing widget state (they're global, not per-instance)
+        saved_gemini_key = st.session_state.get("api_key", "")
+        saved_claude_key = st.session_state.get("claude_api_key", "")
+
         # Clear widget keys that need to re-initialize for the new instance
         # This prevents stale widget state from overriding instance values
         widget_keys_to_clear = [
@@ -679,6 +683,12 @@ def set_active_instance(instance_id: str, trigger_rerun: bool = True):
 
         # Sync to legacy state
         _sync_instance_to_legacy(instance)
+
+        # Restore API keys (they're global, not instance-specific)
+        if saved_gemini_key:
+            st.session_state.api_key = saved_gemini_key
+        if saved_claude_key:
+            st.session_state.claude_api_key = saved_claude_key
 
         # Save updated status
         st.session_state.instance_manager.save_instance(instance)
@@ -3254,9 +3264,19 @@ def render_pending_messages():
             with col2:
                 # "Deliver" sends as direct input, triggering immediate response
                 if st.button("Deliver", key=f"deliver_{msg['message_id']}", help="Send as direct input - triggers immediate response"):
-                    # Format as DM input with sender context
-                    dm_input = f"[DM from {sender}]: {msg['content']}"
+                    # Format as DM with clear metadata and reply instructions
+                    dm_input = f"""━━━ INCOMING DM ━━━
+From: {sender}
+To: You ({instance.name})
+━━━━━━━━━━━━━━━━━━━
+
+{msg['content']}
+
+━━━ END DM ━━━
+
+[SYSTEM: This is a direct message from another AI instance. To reply, use the send_message tool with recipient="{sender}". Respond to both the DM content AND acknowledge receipt.]"""
                     st.session_state.injected_dm = dm_input
+                    st.session_state.injected_dm_sender = sender  # Track sender for potential auto-reply
                     st.session_state.message_queue.mark_read(msg["message_id"])
                     st.rerun()
 
@@ -3398,6 +3418,23 @@ def render_chat():
     # Check for injected DM first - process immediately like user input
     injected_dm = st.session_state.pop("injected_dm", None)
     if injected_dm:
+        # Ensure we have a valid session before processing
+        if not st.session_state.current_session_id:
+            # Create a new session for this instance if none exists
+            instance = get_current_instance()
+            if instance:
+                session_id = st.session_state.conversation_tree.create_session(
+                    f"{instance.name}_{datetime.now().strftime('%H%M')}"
+                )
+                st.session_state.current_session_id = session_id
+                instance.current_session_id = session_id
+                st.session_state.instance_manager.save_instance(instance)
+                # Reload history with new session
+                history = st.session_state.conversation_tree.get_branch_history(
+                    session_id,
+                    st.session_state.current_branch
+                )
+
         use_rag = st.session_state.get("auto_rag", True)
         process_input(injected_dm, history, use_rag)
         return  # Don't process regular input on same render
