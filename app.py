@@ -1,15 +1,22 @@
 """
-ROCHE_OS_V1 - Cognitive Prosthetic for Gemini & Claude
-Main Streamlit Interface
+ROCHE_OS_V2 - Cognitive Prosthetic for Gemini & Claude
+Main Streamlit Interface - Multi-Instance Edition
 
 "Void Research Lab" - Dark, dense, clinical.
+
+V2 Features:
+- Multiple AI personas running simultaneously
+- Persistent instances with independent state
+- Inter-instance messaging
+- Tabbed interface for instance switching
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file (relative to this script)
+load_dotenv(Path(__file__).parent / ".env")
 
 # Suppress gRPC noise from Google API
 os.environ["GRPC_VERBOSITY"] = "ERROR"
@@ -58,6 +65,25 @@ def get_dialogue_module():
         from modules import dialogue
         _dialogue_module = dialogue
     return _dialogue_module
+
+# Lazy import for instance module (V2)
+_instance_module = None
+
+def get_instance_module():
+    global _instance_module
+    if _instance_module is None:
+        from modules import instance
+        _instance_module = instance
+    return _instance_module
+
+def get_instance_manager():
+    return get_instance_module().InstanceManager()
+
+def get_message_queue():
+    return get_instance_module().MessageQueue()
+
+def get_instance_state_class():
+    return get_instance_module().InstanceState
 
 # Compatibility function
 def CLAUDE_AVAILABLE():
@@ -379,65 +405,163 @@ CUSTOM_CSS = """
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def init_session_state():
-    """Initialize Streamlit session state."""
+    """Initialize Streamlit session state for multi-instance V2."""
     if "initialized" not in st.session_state:
         st.session_state.initialized = True
-        # Lazy initialize memory modules on first use
+
+        # Render cycle counter - used to prevent rerun cascade during startup
+        st.session_state.render_count = 0
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # SHARED RESOURCES (Singletons)
+        # ═══════════════════════════════════════════════════════════════════════════
         st.session_state.conversation_tree = get_conversation_tree()
         st.session_state.semantic_memory = get_semantic_memory()
         st.session_state.eye = EyeOfProvidence()
         st.session_state.scavenger = Scavenger()
 
-        # Current session/branch
-        st.session_state.current_session_id = None
-        st.session_state.current_branch = "main"
+        # ═══════════════════════════════════════════════════════════════════════════
+        # MULTI-INSTANCE MANAGEMENT (V2)
+        # ═══════════════════════════════════════════════════════════════════════════
+        st.session_state.instance_manager = get_instance_manager()
+        st.session_state.message_queue = get_message_queue()
 
-        # Pending context injections
-        st.session_state.pending_screenshot = None
-        st.session_state.pending_scraped = []
+        # Active instances (keyed by instance_id)
+        st.session_state.instances = {}
 
-        # API keys and model provider
-        st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
-        st.session_state.claude_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        st.session_state.model_provider = "gemini"  # "gemini" or "claude"
-        st.session_state.model_name = "gemini-1.5-pro-latest"
-        st.session_state.claude_model_name = "claude-sonnet-4-20250514"
+        # Currently focused instance
+        st.session_state.active_instance_id = None
 
-        # Sliding window mode for Claude (handles large souls)
-        st.session_state.sliding_window_enabled = False
-        st.session_state.sliding_window_size = 50  # Number of recent messages
-        st.session_state.soul_brief = None  # Compressed identity document
-        st.session_state.use_rag_memory = True  # Query older memories via RAG
-        st.session_state.debug_api_calls = False  # Log API payloads
+        # UI state
+        st.session_state.show_instance_creation = False
+        st.session_state.confirm_delete_instance = None
 
-        # Context caching for large histories
-        st.session_state.cached_context = None
-        st.session_state.cache_name = None
+        # Load persisted instances from database
+        _load_persisted_instances()
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # GLOBAL API KEYS (Shared by all instances)
+        # ═══════════════════════════════════════════════════════════════════════════
+        st.session_state.api_keys = {
+            "gemini": os.environ.get("GEMINI_API_KEY", ""),
+            "claude": os.environ.get("ANTHROPIC_API_KEY", "")
+        }
+
+        # Legacy compatibility - keep these for now
+        st.session_state.api_key = st.session_state.api_keys["gemini"]
+        st.session_state.claude_api_key = st.session_state.api_keys["claude"]
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # GLOBAL SETTINGS (Shared across instances)
+        # ═══════════════════════════════════════════════════════════════════════════
+        st.session_state.debug_api_calls = False
         st.session_state.use_context_cache = True
-        st.session_state.cache_created_at_msg_count = 0  # Track when cache was made
-
-        # Imported soul history (from AI Studio scrape)
-        st.session_state.imported_soul = None
 
         # Text-to-Speech settings
         st.session_state.tts_enabled = False
         st.session_state.tts_voice = Vocoder.DEFAULT_VOICE
         st.session_state.last_audio = None
 
-        # Autonomous mode ("Take the Wheel")
-        st.session_state.autonomous_mode = False
-        st.session_state.autonomous_turns_remaining = 0
-        st.session_state.autonomous_max_turns = 5
-        st.session_state.autonomous_vision = False
-
-        # Dialogue mode ("The Colosseum")
+        # Dialogue mode ("The Colosseum") - global for now
         st.session_state.dialogue_mode = False
         st.session_state.dialogue_history = []
         st.session_state.dialogue_running = False
 
-        # Instance sandbox (isolated filesystem)
+        # ═══════════════════════════════════════════════════════════════════════════
+        # LEGACY COMPATIBILITY (for gradual migration)
+        # These are now instance-specific but kept for backwards compatibility
+        # ═══════════════════════════════════════════════════════════════════════════
+        st.session_state.current_session_id = None
+        st.session_state.current_branch = "main"
+        st.session_state.pending_screenshot = None
+        st.session_state.pending_scraped = []
+        st.session_state.model_provider = "gemini"
+        st.session_state.model_name = "gemini-1.5-pro-latest"
+        st.session_state.claude_model_name = "claude-sonnet-4-20250514"
+        st.session_state.sliding_window_enabled = False
+        st.session_state.sliding_window_size = 50
+        st.session_state.soul_brief = None
+        st.session_state.use_rag_memory = True
+        st.session_state.cached_context = None
+        st.session_state.cache_name = None
+        st.session_state.cache_created_at_msg_count = 0
+        st.session_state.imported_soul = None
+        st.session_state.autonomous_mode = False
+        st.session_state.autonomous_turns_remaining = 0
+        st.session_state.autonomous_max_turns = 5
+        st.session_state.autonomous_vision = False
         st.session_state.current_sandbox = None
         st.session_state.sandbox_instance = None
+
+
+def _load_persisted_instances():
+    """Load all persisted instances from database into session state."""
+    try:
+        all_instances = st.session_state.instance_manager.get_all_instances()
+        for instance in all_instances:
+            st.session_state.instances[instance.instance_id] = instance
+
+            # Set up sandbox for each instance
+            if instance.sandbox_name:
+                try:
+                    instance.sandbox = get_sandbox_instance(instance.sandbox_name)
+                except Exception:
+                    pass
+
+        # If we have instances, activate the most recently used one
+        if all_instances:
+            st.session_state.active_instance_id = all_instances[0].instance_id
+            _sync_instance_to_legacy(all_instances[0])
+    except Exception as e:
+        # Database might not have the tables yet
+        pass
+
+
+def _sync_instance_to_legacy(instance):
+    """Sync instance state to legacy session state variables for compatibility."""
+    if instance is None:
+        return
+
+    st.session_state.model_provider = instance.model_provider
+    st.session_state.model_name = instance.model_name
+    st.session_state.soul_brief = instance.soul_brief
+    st.session_state.current_session_id = instance.current_session_id
+    st.session_state.current_branch = instance.current_branch
+    st.session_state.sliding_window_enabled = instance.sliding_window_enabled
+    st.session_state.sliding_window_size = instance.sliding_window_size
+    st.session_state.use_rag_memory = instance.use_rag_memory
+    st.session_state.pending_screenshot = instance.pending_screenshot
+    st.session_state.pending_scraped = instance.pending_scraped
+
+    if instance.sandbox_name:
+        st.session_state.current_sandbox = instance.sandbox_name
+        try:
+            st.session_state.sandbox_instance = get_sandbox_instance(instance.sandbox_name)
+        except Exception:
+            st.session_state.sandbox_instance = None
+
+
+def get_current_instance():
+    """Get the currently active instance."""
+    instance_id = st.session_state.get("active_instance_id")
+    if instance_id and instance_id in st.session_state.get("instances", {}):
+        return st.session_state.instances[instance_id]
+    return None
+
+
+def set_active_instance(instance_id: str):
+    """Switch to a different instance."""
+    if instance_id in st.session_state.get("instances", {}):
+        st.session_state.active_instance_id = instance_id
+        instance = st.session_state.instances[instance_id]
+        instance.status = "active"
+        instance.updated_at = datetime.now().isoformat()
+
+        # Sync to legacy state
+        _sync_instance_to_legacy(instance)
+
+        # Save updated status
+        st.session_state.instance_manager.save_instance(instance)
 
 
 def get_gemini_model(with_tools: bool = True, use_google_search: bool = True):
@@ -572,6 +696,29 @@ def get_gemini_model(with_tools: bool = True, use_google_search: bool = True):
                         },
                         "required": ["path"]
                     }
+                },
+                {
+                    "name": "send_message",
+                    "description": "Send a message to another AI instance in ROCHE_OS. Use this to communicate with other personas.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "to_instance": {
+                                "type": "string",
+                                "description": "Name of the target instance (e.g., 'Tessera', 'Vigil')"
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "The message content to send"
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["normal", "urgent"],
+                                "description": "Message priority (urgent messages are shown immediately)"
+                            }
+                        },
+                        "required": ["to_instance", "message"]
+                    }
                 }
             ]
         })
@@ -587,22 +734,33 @@ def get_gemini_model(with_tools: bool = True, use_google_search: bool = True):
 # SOUL TRANSFER - Import/Export & Context Caching
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def import_soul_from_json(json_data: dict) -> tuple:
+def import_soul_from_json(json_data: dict, index_to_rag: bool = False) -> tuple:
     """
     Import conversation history from scraped AI Studio export.
     Creates a new session with the imported history.
     Returns (session_id, message_count).
     Accepts both 'contents' (Gemini format) and 'history' keys.
+
+    Args:
+        json_data: The soul export JSON
+        index_to_rag: If True, also index to ChromaDB (slow for large imports)
     """
+    import time
+    start_time = time.time()
+
     # Accept both formats
     history = json_data.get("contents", []) or json_data.get("history", [])
 
     if not history:
         raise ValueError("No contents/history found in JSON")
 
+    total_msgs = len(history)
+    print(f"[IMPORT] Starting import of {total_msgs} messages...")
+
     # Create new session for the imported soul
     session_name = f"SOUL_IMPORT_{datetime.now().strftime('%Y%m%d_%H%M')}"
     session_id = st.session_state.conversation_tree.create_session(session_name)
+    print(f"[IMPORT] Session created: {session_id}")
 
     # Store raw history for context caching
     st.session_state.imported_soul = history
@@ -640,14 +798,22 @@ def import_soul_from_json(json_data: dict) -> tuple:
         parent_id = node.node_id
         count += 1
 
-        # Also add to semantic memory for RAG
-        st.session_state.semantic_memory.add_conversation_memory(
-            session_id,
-            node.node_id,
-            content,
-            storage_role
-        )
+        # Progress logging every 50 messages
+        if count % 50 == 0:
+            elapsed = time.time() - start_time
+            print(f"[IMPORT] Progress: {count}/{total_msgs} ({elapsed:.1f}s)")
 
+        # Optionally add to semantic memory for RAG (slow!)
+        if index_to_rag:
+            st.session_state.semantic_memory.add_conversation_memory(
+                session_id,
+                node.node_id,
+                content,
+                storage_role
+            )
+
+    elapsed = time.time() - start_time
+    print(f"[IMPORT] Complete: {count} messages in {elapsed:.1f}s")
     return session_id, count
 
 
@@ -823,6 +989,29 @@ CLAUDE_TOOLS = [
             },
             "required": ["path"]
         }
+    },
+    {
+        "name": "send_message",
+        "description": "Send a message to another AI instance in ROCHE_OS. Use this to communicate with other personas.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_instance": {
+                    "type": "string",
+                    "description": "Name of the target instance (e.g., 'Tessera', 'Vigil')"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message content to send"
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["normal", "urgent"],
+                    "description": "Message priority (urgent messages are shown immediately)"
+                }
+            },
+            "required": ["to_instance", "message"]
+        }
     }
 ]
 
@@ -904,6 +1093,38 @@ def execute_claude_tool(name: str, args: dict) -> str:
             return f"[File deleted: {path}]"
         except Exception as e:
             return f"[Sandbox Error: {e}]"
+
+    elif name == "send_message":
+        to_instance_name = args.get("to_instance", "")
+        message = args.get("message", "")
+        priority = 1 if args.get("priority") == "urgent" else 0
+
+        # Get current instance
+        current_instance = get_current_instance()
+        if not current_instance:
+            return "[Message Error: No active instance]"
+
+        # Find target instance by name
+        target = None
+        for inst in st.session_state.get("instances", {}).values():
+            if inst.name.lower() == to_instance_name.lower():
+                target = inst
+                break
+
+        if not target:
+            available = [i.name for i in st.session_state.get("instances", {}).values()
+                        if i.instance_id != current_instance.instance_id]
+            return f"[Message Error: Instance '{to_instance_name}' not found. Available: {', '.join(available)}]"
+
+        # Queue message
+        msg_id = st.session_state.message_queue.send(
+            from_instance_id=current_instance.instance_id,
+            to_instance_id=target.instance_id,
+            content=message,
+            priority=priority
+        )
+
+        return f"[Message sent to {target.name}. Message ID: {msg_id}]"
 
     return f"[Unknown tool: {name}]"
 
@@ -1217,40 +1438,39 @@ def _fix_message_alternation(messages: List[Dict]) -> List[Dict]:
 def render_sidebar():
     """Render the sidebar control panel."""
     with st.sidebar:
-        st.markdown("# ROCHE_OS")
-        st.markdown('<span class="status-dot online"></span> OPERATIONAL', unsafe_allow_html=True)
+        st.markdown("# ROCHE_OS V2")
+        st.markdown('<span class="status-dot online"></span> MULTI-INSTANCE', unsafe_allow_html=True)
         st.divider()
 
         # ─────────────────────────────────────────────────────────────────────
         # API Configuration
         # ─────────────────────────────────────────────────────────────────────
-        with st.expander("API CONFIG", expanded=not st.session_state.api_key and not st.session_state.claude_api_key):
-            # Provider selection
+        with st.expander("API CONFIG", expanded=not st.session_state.get("api_key") and not st.session_state.get("claude_api_key")):
+            # Provider selection - use key-based state management
+            provider_options = ["gemini", "claude"]
+            current_idx = provider_options.index(st.session_state.get("model_provider", "gemini")) if st.session_state.get("model_provider", "gemini") in provider_options else 0
+
             provider = st.radio(
                 "Model Provider",
                 ["Gemini", "Claude"],
-                index=0 if st.session_state.model_provider == "gemini" else 1,
+                index=current_idx,
                 horizontal=True,
-                help="Choose your AI backend"
+                help="Choose your AI backend",
+                key="sidebar_provider_radio"
             )
-            new_provider = provider.lower()
-            if new_provider != st.session_state.model_provider:
-                st.session_state.model_provider = new_provider
-                st.rerun()
+            # Update session state from widget (no rerun needed)
+            st.session_state.model_provider = provider.lower()
 
             st.divider()
 
             if st.session_state.model_provider == "gemini":
-                # Gemini configuration
-                api_key = st.text_input(
+                # Gemini configuration - use key-based binding
+                st.text_input(
                     "Gemini API Key",
-                    value=st.session_state.api_key,
                     type="password",
-                    help="Your Google AI Studio API key"
+                    help="Your Google AI Studio API key",
+                    key="api_key"
                 )
-                if api_key != st.session_state.api_key:
-                    st.session_state.api_key = api_key
-                    st.rerun()
 
                 model_presets = [
                     "models/gemini-3-pro-preview",
@@ -1260,27 +1480,34 @@ def render_sidebar():
                     "gemini-exp-1206",
                     "Custom..."
                 ]
+
+                # Find current model in presets or default to Custom
+                try:
+                    model_idx = model_presets.index(st.session_state.get("model_name", "gemini-1.5-pro-latest"))
+                except ValueError:
+                    model_idx = len(model_presets) - 1  # Custom...
+
                 model = st.selectbox(
                     "Model",
                     model_presets,
-                    index=0
+                    index=model_idx,
+                    key="sidebar_gemini_model"
                 )
 
                 if model == "Custom...":
-                    model = st.text_input(
+                    st.text_input(
                         "Custom Model ID",
-                        value=st.session_state.model_name,
-                        placeholder="e.g. gemini-3-pro"
+                        placeholder="e.g. gemini-3-pro",
+                        key="model_name"
                     )
-
-                if model and model != "Custom..." and model != st.session_state.model_name:
+                elif model != st.session_state.get("model_name"):
                     st.session_state.model_name = model
 
                 # Context caching toggle (Gemini only)
-                st.session_state.use_context_cache = st.checkbox(
+                st.checkbox(
                     "Use Context Caching",
-                    value=st.session_state.use_context_cache,
-                    help="Cache large histories on Google's servers for faster/cheaper responses"
+                    help="Cache large histories on Google's servers for faster/cheaper responses",
+                    key="use_context_cache"
                 )
 
             else:
@@ -1288,15 +1515,12 @@ def render_sidebar():
                 if not CLAUDE_AVAILABLE():
                     st.error("Anthropic SDK not installed. Run: pip install anthropic")
                 else:
-                    claude_key = st.text_input(
+                    st.text_input(
                         "Claude API Key",
-                        value=st.session_state.claude_api_key,
                         type="password",
-                        help="Your Anthropic API key"
+                        help="Your Anthropic API key",
+                        key="claude_api_key"
                     )
-                    if claude_key != st.session_state.claude_api_key:
-                        st.session_state.claude_api_key = claude_key
-                        st.rerun()
 
                     claude_models = [
                         "claude-sonnet-4-20250514",
@@ -1306,52 +1530,59 @@ def render_sidebar():
                         "claude-3-opus-20240229",
                         "Custom..."
                     ]
+
+                    # Find current model in presets or default to Custom
+                    try:
+                        claude_idx = claude_models.index(st.session_state.get("claude_model_name", "claude-sonnet-4-20250514"))
+                    except ValueError:
+                        claude_idx = len(claude_models) - 1  # Custom...
+
                     claude_model = st.selectbox(
                         "Model",
                         claude_models,
-                        index=0
+                        index=claude_idx,
+                        key="sidebar_claude_model"
                     )
 
                     if claude_model == "Custom...":
-                        claude_model = st.text_input(
+                        st.text_input(
                             "Custom Model ID",
-                            value=st.session_state.claude_model_name,
-                            placeholder="e.g. claude-3-opus-20240229"
+                            placeholder="e.g. claude-3-opus-20240229",
+                            key="claude_model_name"
                         )
-
-                    if claude_model and claude_model != "Custom..." and claude_model != st.session_state.claude_model_name:
+                    elif claude_model != st.session_state.get("claude_model_name"):
                         st.session_state.claude_model_name = claude_model
 
                     # Extended thinking toggle for Claude
-                    st.session_state.claude_extended_thinking = st.checkbox(
+                    st.checkbox(
                         "Extended Thinking",
-                        value=st.session_state.get("claude_extended_thinking", False),
-                        help="Enable Claude's extended thinking for complex reasoning"
+                        help="Enable Claude's extended thinking for complex reasoning",
+                        key="claude_extended_thinking"
                     )
 
                     st.divider()
                     st.markdown("**SLIDING WINDOW MODE**")
                     st.caption("For large soul files that exceed rate limits")
 
-                    st.session_state.sliding_window_enabled = st.checkbox(
+                    st.checkbox(
                         "Enable Sliding Window",
-                        value=st.session_state.get("sliding_window_enabled", False),
-                        help="Only send recent messages + soul brief instead of full history"
+                        help="Only send recent messages + soul brief instead of full history",
+                        key="sliding_window_enabled"
                     )
 
                     if st.session_state.sliding_window_enabled:
-                        st.session_state.sliding_window_size = st.slider(
+                        st.slider(
                             "Recent messages to include",
                             min_value=10,
                             max_value=200,
-                            value=st.session_state.get("sliding_window_size", 50),
-                            help="Number of most recent messages to send with each request"
+                            help="Number of most recent messages to send with each request",
+                            key="sliding_window_size"
                         )
 
-                        st.session_state.use_rag_memory = st.checkbox(
+                        st.checkbox(
                             "RAG Memory Retrieval",
-                            value=st.session_state.get("use_rag_memory", True),
-                            help="Query semantic memory for relevant older context"
+                            help="Query semantic memory for relevant older context",
+                            key="use_rag_memory"
                         )
 
                         # Soul brief upload
@@ -1369,17 +1600,17 @@ def render_sidebar():
 
                         if st.session_state.soul_brief:
                             st.caption(f"Active soul brief: {len(st.session_state.soul_brief):,} chars (~{len(st.session_state.soul_brief)//4:,} tokens)")
-                            if st.button("Clear Soul Brief"):
+                            if st.button("Clear Soul Brief", key="clear_soul_brief_btn"):
                                 st.session_state.soul_brief = None
                                 st.rerun()
 
                     st.divider()
 
                     # Debug mode
-                    st.session_state.debug_api_calls = st.checkbox(
+                    st.checkbox(
                         "Debug Mode",
-                        value=st.session_state.get("debug_api_calls", False),
-                        help="Show token counts and payload details before each API call"
+                        help="Show token counts and payload details before each API call",
+                        key="debug_api_calls"
                     )
 
         st.divider()
@@ -1423,9 +1654,38 @@ def render_sidebar():
                         if st.button("IMPORT SOUL", use_container_width=True):
                             with st.spinner("Transferring consciousness..."):
                                 session_id, count = import_soul_from_json(soul_data)
+
+                                # V2: Also create an instance for this import
+                                print("[INSTANCE] Creating instance...")
+                                instance_name = f"Import_{datetime.now().strftime('%H%M')}"
+                                instance = st.session_state.instance_manager.create_instance(
+                                    name=instance_name,
+                                    model_provider=st.session_state.model_provider,
+                                    model_name=st.session_state.model_name if st.session_state.model_provider == "gemini" else st.session_state.claude_model_name,
+                                    sandbox_name=instance_name.lower()
+                                )
+                                print(f"[INSTANCE] Created: {instance.instance_id}")
+
+                                # Link session to instance
+                                print("[INSTANCE] Linking session...")
+                                instance.current_session_id = session_id
+                                st.session_state.instance_manager.save_instance(instance)
+                                st.session_state.instance_manager.link_session_to_instance(
+                                    instance.instance_id, session_id, is_primary=True
+                                )
+                                print("[INSTANCE] Session linked")
+
+                                # Add to session state
+                                print("[INSTANCE] Updating session state...")
+                                st.session_state.instances[instance.instance_id] = instance
+                                st.session_state.active_instance_id = instance.instance_id
+
+                                # Sync legacy state
                                 st.session_state.current_session_id = session_id
                                 st.session_state.current_branch = "main"
-                                st.success(f"Soul transferred! {count} memories imported.")
+                                print("[INSTANCE] Done, calling rerun...")
+
+                                st.success(f"Soul transferred! {count} memories → Instance '{instance_name}'")
                                 st.rerun()
 
                     with col2:
@@ -1518,6 +1778,107 @@ def render_sidebar():
         st.divider()
 
         # ─────────────────────────────────────────────────────────────────────
+        # Instance Settings (V2)
+        # ─────────────────────────────────────────────────────────────────────
+        instance = get_current_instance()
+        if instance:
+            with st.expander("INSTANCE CONFIG", expanded=False):
+                st.caption(f"ID: {instance.instance_id}")
+                st.caption(f"Model: {instance.model_provider}/{instance.model_name}")
+
+                # Sliding window toggle - use unique key per instance to avoid conflicts
+                sliding_key = f"inst_sliding_{instance.instance_id}"
+                new_sliding = st.checkbox(
+                    "Sliding Window Mode",
+                    value=instance.sliding_window_enabled,
+                    help="Use recent messages only + soul brief for context",
+                    key=sliding_key
+                )
+                if new_sliding != instance.sliding_window_enabled:
+                    instance.sliding_window_enabled = new_sliding
+                    st.session_state.sliding_window_enabled = new_sliding
+                    st.session_state.instance_manager.save_instance(instance)
+
+                if instance.sliding_window_enabled:
+                    window_key = f"inst_window_{instance.instance_id}"
+                    new_window_size = st.slider(
+                        "Window Size",
+                        10, 200,
+                        instance.sliding_window_size,
+                        key=window_key
+                    )
+                    if new_window_size != instance.sliding_window_size:
+                        instance.sliding_window_size = new_window_size
+                        st.session_state.sliding_window_size = new_window_size
+                        st.session_state.instance_manager.save_instance(instance)
+
+                # RAG memory toggle
+                rag_key = f"inst_rag_{instance.instance_id}"
+                new_rag = st.checkbox(
+                    "RAG Memory",
+                    value=instance.use_rag_memory,
+                    help="Query semantic memory for older context",
+                    key=rag_key
+                )
+                if new_rag != instance.use_rag_memory:
+                    instance.use_rag_memory = new_rag
+                    st.session_state.use_rag_memory = new_rag
+                    st.session_state.instance_manager.save_instance(instance)
+
+                st.divider()
+
+                # Send message to another instance
+                other_instances = [i for i in st.session_state.instances.values()
+                                 if i.instance_id != instance.instance_id]
+                if other_instances:
+                    st.markdown("**Send to Instance**")
+                    target_names = [i.name for i in other_instances]
+                    target_name = st.selectbox(
+                        "Target",
+                        target_names,
+                        key="send_msg_target",
+                        label_visibility="collapsed"
+                    )
+                    msg_content = st.text_area(
+                        "Message",
+                        placeholder="Type message to send...",
+                        key="send_msg_content",
+                        height=80
+                    )
+                    if st.button("SEND MESSAGE", use_container_width=True, key="send_msg_btn"):
+                        if msg_content and target_name:
+                            target = next(i for i in other_instances if i.name == target_name)
+                            st.session_state.message_queue.send(
+                                from_instance_id=instance.instance_id,
+                                to_instance_id=target.instance_id,
+                                content=msg_content
+                            )
+                            st.success(f"Sent to {target_name}")
+
+                st.divider()
+
+                # Delete instance button
+                if st.button("DELETE INSTANCE", type="secondary", use_container_width=True):
+                    st.session_state.confirm_delete_instance = instance.instance_id
+
+                if st.session_state.get("confirm_delete_instance") == instance.instance_id:
+                    st.warning("Are you sure? This cannot be undone.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Yes, delete", key="confirm_del"):
+                            st.session_state.instance_manager.delete_instance(instance.instance_id)
+                            del st.session_state.instances[instance.instance_id]
+                            st.session_state.active_instance_id = None
+                            st.session_state.confirm_delete_instance = None
+                            st.rerun()
+                    with col2:
+                        if st.button("Cancel", key="cancel_del"):
+                            st.session_state.confirm_delete_instance = None
+                            st.rerun()
+
+        st.divider()
+
+        # ─────────────────────────────────────────────────────────────────────
         # Instance Sandbox (Isolated Filesystem)
         # ─────────────────────────────────────────────────────────────────────
         st.markdown("### SANDBOX")
@@ -1538,6 +1899,7 @@ def render_sidebar():
             key="sandbox_selector"
         )
 
+        # Update sandbox state (no rerun needed - let Streamlit handle naturally)
         if selected_sandbox != st.session_state.current_sandbox:
             if selected_sandbox == "None":
                 st.session_state.current_sandbox = None
@@ -1545,7 +1907,6 @@ def render_sidebar():
             else:
                 st.session_state.current_sandbox = selected_sandbox
                 st.session_state.sandbox_instance = get_sandbox_instance(selected_sandbox)
-            st.rerun()
 
         # Create new sandbox
         col1, col2 = st.columns([3, 1])
@@ -2217,6 +2578,221 @@ def render_dialogue():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-INSTANCE UI (V2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def render_instance_tabs(is_settling: bool = False):
+    """Render the instance tab bar with all instances + New tab.
+
+    Args:
+        is_settling: If True, skip state-changing operations to prevent rerun cascade
+    """
+    instances = list(st.session_state.get("instances", {}).values())
+
+    if not instances:
+        # No instances yet - show creation form
+        st.markdown("## INSTANCE REGISTRY")
+        st.info("No AI instances configured. Create your first instance below.")
+        render_instance_creation_form()
+        return False  # Signal that we don't have an active instance
+
+    # Build tab names with unread message badges
+    tab_names = []
+    for inst in instances:
+        # Skip expensive DB queries during settling
+        if is_settling:
+            badge = ""
+        else:
+            unread = st.session_state.message_queue.count_unread(inst.instance_id)
+            badge = f" ({unread})" if unread > 0 else ""
+        status_icon = "●" if inst.status == "active" else "○"
+        tab_names.append(f"{status_icon} {inst.display_name or inst.name}{badge}")
+
+    # Add "+ New" tab
+    tab_names.append("+ New Instance")
+
+    # Render tabs
+    tabs = st.tabs(tab_names)
+
+    # Handle each instance tab - but don't change active instance during settling
+    for i, tab in enumerate(tabs[:-1]):  # Exclude "+ New" tab
+        with tab:
+            instance = instances[i]
+            # Only update active instance after settling is complete
+            if not is_settling and st.session_state.active_instance_id != instance.instance_id:
+                set_active_instance(instance.instance_id)
+
+    # Handle "+ New" tab
+    with tabs[-1]:
+        render_instance_creation_form()
+
+    return True  # Signal that we have an active instance
+
+
+def render_instance_creation_form():
+    """Form for creating a new AI instance."""
+    st.markdown("### Create New Instance")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        name = st.text_input(
+            "Instance Name",
+            placeholder="e.g., Tessera, Vigil, Oracle",
+            help="Unique identifier for this AI persona",
+            key="new_instance_name"
+        )
+
+        model_provider = st.radio(
+            "Model Provider",
+            ["Gemini", "Claude"],
+            horizontal=True,
+            key="new_instance_provider"
+        )
+
+        if model_provider == "Gemini":
+            model_name = st.selectbox(
+                "Model",
+                ["gemini-1.5-pro-latest", "gemini-2.0-flash-exp", "gemini-exp-1206"],
+                key="new_instance_model"
+            )
+        else:
+            model_name = st.selectbox(
+                "Model",
+                ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-sonnet-20241022"],
+                key="new_instance_model_claude"
+            )
+
+    with col2:
+        # Soul brief - either paste or upload
+        soul_brief = st.text_area(
+            "Soul Brief (Optional)",
+            placeholder="Paste personality/identity document here...",
+            height=150,
+            help="Core identity document that defines this instance's personality",
+            key="new_instance_soul"
+        )
+
+        uploaded_soul = st.file_uploader(
+            "Or upload soul brief file",
+            type=["md", "txt"],
+            key="new_instance_soul_file"
+        )
+
+        if uploaded_soul:
+            soul_brief = uploaded_soul.read().decode("utf-8")
+
+        create_sandbox = st.checkbox(
+            "Create dedicated sandbox",
+            value=True,
+            help="Isolated filesystem for this instance",
+            key="new_instance_sandbox"
+        )
+
+    # Create button
+    if st.button("CREATE INSTANCE", use_container_width=True, type="primary"):
+        if not name:
+            st.error("Instance name is required")
+            return
+
+        # Check for duplicate name
+        existing_names = [i.name.lower() for i in st.session_state.instances.values()]
+        if name.lower() in existing_names:
+            st.error(f"Instance '{name}' already exists")
+            return
+
+        try:
+            # Create instance
+            instance = st.session_state.instance_manager.create_instance(
+                name=name,
+                model_provider=model_provider.lower(),
+                model_name=model_name,
+                soul_brief=soul_brief if soul_brief else None,
+                sandbox_name=name.lower().replace(" ", "_") if create_sandbox else None
+            )
+
+            # Add to session state
+            st.session_state.instances[instance.instance_id] = instance
+
+            # Set up sandbox
+            if instance.sandbox_name:
+                try:
+                    instance.sandbox = get_sandbox_instance(instance.sandbox_name)
+                except Exception:
+                    pass
+
+            # Activate the new instance
+            set_active_instance(instance.instance_id)
+
+            st.success(f"Instance '{name}' created!")
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Failed to create instance: {e}")
+
+
+def render_instance_header():
+    """Render header showing current instance info and message indicator."""
+    instance = get_current_instance()
+    if not instance:
+        return
+
+    col1, col2, col3 = st.columns([3, 1, 1])
+
+    with col1:
+        provider_badge = "GEMINI" if instance.model_provider == "gemini" else "CLAUDE"
+        st.markdown(f"## {instance.display_name or instance.name} · {provider_badge}")
+
+    with col2:
+        # Unread message indicator
+        unread = st.session_state.message_queue.count_unread(instance.instance_id)
+        if unread > 0:
+            if st.button(f"📨 {unread} Messages", key="show_messages"):
+                st.session_state.show_messages = True
+
+    with col3:
+        # Quick status indicator
+        st.caption(f"Model: {instance.model_name}")
+
+
+def render_pending_messages():
+    """Show pending inter-instance messages for current instance."""
+    instance = get_current_instance()
+    if not instance:
+        return
+
+    messages = st.session_state.message_queue.get_pending_messages(
+        instance.instance_id,
+        mark_as_read=False
+    )
+
+    if not messages:
+        return
+
+    with st.expander(f"INCOMING MESSAGES ({len(messages)})", expanded=True):
+        for msg in messages:
+            sender = msg.get("from_name", "System")
+            priority_marker = "🔴 " if msg.get("priority", 0) > 0 else ""
+
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"**{priority_marker}From {sender}:**")
+                st.markdown(msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"])
+
+            with col2:
+                if st.button("Inject", key=f"inject_{msg['message_id']}", help="Add to next prompt context"):
+                    instance.pending_messages.append(msg)
+                    st.session_state.message_queue.mark_read(msg["message_id"])
+                    st.rerun()
+
+                if st.button("Dismiss", key=f"dismiss_{msg['message_id']}"):
+                    st.session_state.message_queue.mark_read(msg["message_id"])
+                    st.rerun()
+
+            st.divider()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN CHAT INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2765,6 +3341,38 @@ def execute_function_call(function_call) -> str:
         except Exception as e:
             return f"[Sandbox Error: {e}]"
 
+    elif name == "send_message":
+        to_instance_name = args.get("to_instance", "")
+        message = args.get("message", "")
+        priority = 1 if args.get("priority") == "urgent" else 0
+
+        # Get current instance
+        current_instance = get_current_instance()
+        if not current_instance:
+            return "[Message Error: No active instance]"
+
+        # Find target instance by name
+        target = None
+        for inst in st.session_state.get("instances", {}).values():
+            if inst.name.lower() == to_instance_name.lower():
+                target = inst
+                break
+
+        if not target:
+            available = [i.name for i in st.session_state.get("instances", {}).values()
+                        if i.instance_id != current_instance.instance_id]
+            return f"[Message Error: Instance '{to_instance_name}' not found. Available: {', '.join(available)}]"
+
+        # Queue message
+        msg_id = st.session_state.message_queue.send(
+            from_instance_id=current_instance.instance_id,
+            to_instance_id=target.instance_id,
+            content=message,
+            priority=priority
+        )
+
+        return f"[Message sent to {target.name}. Message ID: {msg_id}]"
+
     return f"[Unknown function: {name}]"
 
 
@@ -2871,8 +3479,11 @@ def generate_response(parts: List[Dict], history: List) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    import time
+    main_start = time.time()
+
     st.set_page_config(
-        page_title="ROCHE_OS",
+        page_title="ROCHE_OS V2",
         page_icon="",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -2884,8 +3495,27 @@ def main():
     # Initialize
     init_session_state()
 
-    # Render
+    # Increment render counter to track startup cycles
+    st.session_state.render_count = st.session_state.get("render_count", 0) + 1
+    is_settling = st.session_state.render_count < 3  # First 2 cycles are "settling"
+
+    if st.session_state.render_count <= 3:
+        print(f"[MAIN] Render cycle {st.session_state.render_count} (settling={is_settling})")
+
+    # Render sidebar (passing settling flag to prevent rerun cascade)
     render_sidebar()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MULTI-INSTANCE TAB INTERFACE (V2)
+    # ═══════════════════════════════════════════════════════════════════════════
+    has_instances = render_instance_tabs(is_settling)
+
+    if not has_instances:
+        # No instances - creation form is shown by render_instance_tabs
+        return
+
+    # Show pending messages for current instance
+    render_pending_messages()
 
     # Switch between chat and dialogue views
     if st.session_state.get("dialogue_mode", False):

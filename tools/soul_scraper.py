@@ -309,11 +309,12 @@ async def scrape_ai_studio():
 
 # Also provide a console-injectable version for direct browser use
 CONSOLE_SCRIPT = '''
-// SOUL SCRAPER v2 - Console Version for Google AI Studio
+// SOUL SCRAPER v3 - Console Version for Google AI Studio
+// INCREMENTAL SCROLL EDITION - handles virtual scrolling properly
 // Paste this into AI Studio's browser console (F12 -> Console)
 
 (async function scrapeSoul() {
-    console.log("🧠 SOUL SCRAPER v2 starting...");
+    console.log("🧠 SOUL SCRAPER v3 starting...");
 
     const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -327,29 +328,38 @@ CONSOLE_SCRIPT = '''
         return;
     }
 
-    console.log("📜 Scrolling to load all messages...");
+    console.log("📜 Scrolling UP in tiny increments to load all messages...");
 
-    // Scroll to TOP to load older messages
-    let lastHeight = scrollContainer.scrollHeight;
-    let attempts = 0;
+    // First scroll to bottom to get starting point
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    await delay(500);
 
-    while (attempts < 100) {
-        scrollContainer.scrollTop = 0;
-        await delay(500);
+    let lastScrollTop = scrollContainer.scrollTop;
+    let stuckCount = 0;
+    let scrollAttempts = 0;
 
-        const newHeight = scrollContainer.scrollHeight;
-        console.log(`Scroll attempt ${attempts + 1}, height: ${newHeight}`);
+    // Scroll UP in small increments (AI Studio uses virtual scrolling)
+    while (scrollAttempts < 500 && stuckCount < 5) {
+        scrollContainer.scrollTop -= 300;  // Small chunk up
+        await delay(150);  // Let virtual DOM catch up
 
-        if (newHeight === lastHeight) {
-            // Try one more time
-            await delay(1000);
-            if (scrollContainer.scrollHeight === lastHeight) break;
+        if (Math.abs(scrollContainer.scrollTop - lastScrollTop) < 10) {
+            stuckCount++;
+            await delay(300);  // Extra wait when stuck
+        } else {
+            stuckCount = 0;
         }
-        lastHeight = newHeight;
-        attempts++;
+
+        lastScrollTop = scrollContainer.scrollTop;
+        scrollAttempts++;
+
+        if (scrollAttempts % 20 === 0) {
+            console.log(`Scroll progress: ${scrollAttempts} attempts, scrollTop: ${scrollContainer.scrollTop}`);
+        }
     }
 
-    console.log("✅ Scroll complete, extracting messages...");
+    console.log(`✅ Scroll complete after ${scrollAttempts} attempts`);
+    await delay(1000);  // Final settle time
 
     // Extract messages - target the actual turn components
     const messages = [];
@@ -366,59 +376,19 @@ CONSOLE_SCRIPT = '''
                        turn.querySelector('[class*="model-turn"]') ||
                        turn.getAttribute('data-role') === 'model';
 
-        // Find the actual content - look for markdown or text containers
-        // Exclude buttons, icons, and UI elements
-        const contentSelectors = [
-            '.markdown-content',
-            '.message-content',
-            '.text-content',
-            '.response-content',
-            '[class*="markdown"]',
-            'ms-text-chunk',
-            '.user-text',
-            'p',
-            'pre'
-        ];
+        // Clone and remove UI garbage
+        const clone = turn.cloneNode(true);
+        clone.querySelectorAll('button, [role="button"], mat-icon, .mat-icon, [class*="icon"], [class*="action"], [class*="menu"], [class*="toolbar"], [class*="button"]').forEach(el => el.remove());
 
-        let textContent = '';
-
-        // Try to find specific content containers
-        for (const selector of contentSelectors) {
-            const elements = turn.querySelectorAll(selector);
-            if (elements.length > 0) {
-                elements.forEach(el => {
-                    // Skip if it's a button or interactive element
-                    if (el.closest('button') || el.closest('[role="button"]')) return;
-                    textContent += el.textContent + '\\n';
-                });
-                if (textContent.trim()) break;
-            }
-        }
-
-        // Fallback: get text but filter out common UI garbage
-        if (!textContent.trim()) {
-            // Clone the turn and remove known UI elements
-            const clone = turn.cloneNode(true);
-
-            // Remove buttons, icons, menus, etc.
-            clone.querySelectorAll('button, [role="button"], mat-icon, .mat-icon, [class*="icon"], [class*="action"], [class*="menu"], [class*="toolbar"], [class*="button"]').forEach(el => el.remove());
-
-            textContent = clone.textContent || '';
-        }
-
-        // Clean up the text
-        textContent = textContent
-            .replace(/\\n{3,}/g, '\\n\\n')  // Multiple newlines to double
-            .replace(/^\\s+|\\s+$/g, '')     // Trim
-            .replace(/vert/gi, '')           // Remove the garbage "vert" text
+        let textContent = (clone.textContent || '')
+            .replace(/\\n{3,}/g, '\\n\\n')
             .trim();
 
-        if (textContent.length > 10) {  // Skip very short garbage
+        if (textContent.length > 10) {
             messages.push({
                 role: isModel ? "model" : "user",
                 parts: [{ text: textContent }]
             });
-            console.log(`Turn ${index}: ${isModel ? 'MODEL' : 'USER'} - ${textContent.slice(0, 50)}...`);
         }
     });
 
@@ -439,14 +409,13 @@ CONSOLE_SCRIPT = '''
             message_count: merged.length,
             raw_turns: turns.length
         },
-        contents: merged
+        history: merged
     };
 
     // Download as file
     const blob = new Blob([JSON.stringify(output, null, 2)], {type: "application/json"});
-    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = URL.createObjectURL(blob);
     a.download = "gemini_soul_export.json";
     a.click();
 

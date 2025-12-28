@@ -1,6 +1,7 @@
 """
-ROCHE_OS_V1 - Memory Module
+ROCHE_OS_V2 - Memory Module
 The Shoggoth Vault: SQLite for chat trees + ChromaDB for semantic recall.
+Multi-instance support with instance registry and inter-instance messaging.
 """
 
 import sqlite3
@@ -58,7 +59,7 @@ class ConversationTree:
     Every edit spawns a new branch, nothing is ever deleted.
     """
 
-    def __init__(self, db_path: str = "roche_memory.db"):
+    def __init__(self, db_path: str = "roche_memory_v2.db"):
         self.db_path = db_path
         self._init_db()
 
@@ -117,6 +118,56 @@ class ConversationTree:
                 message TEXT,
                 timestamp TEXT,
                 snapshot TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+            )
+        """)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # MULTI-INSTANCE SUPPORT TABLES (V2)
+        # ═══════════════════════════════════════════════════════════════════════════
+
+        # Instance registry - persistent AI personas
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS instances (
+                instance_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                model_provider TEXT DEFAULT 'gemini',
+                model_name TEXT,
+                soul_brief TEXT,
+                sandbox_name TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                status TEXT DEFAULT 'inactive',
+                config TEXT DEFAULT '{}'
+            )
+        """)
+
+        # Inter-instance message queue
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS instance_messages (
+                message_id TEXT PRIMARY KEY,
+                from_instance_id TEXT,
+                to_instance_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                message_type TEXT DEFAULT 'direct',
+                priority INTEGER DEFAULT 0,
+                created_at TEXT,
+                read_at TEXT,
+                FOREIGN KEY (from_instance_id) REFERENCES instances(instance_id),
+                FOREIGN KEY (to_instance_id) REFERENCES instances(instance_id)
+            )
+        """)
+
+        # Link instances to conversation sessions
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS instance_sessions (
+                instance_id TEXT,
+                session_id TEXT,
+                is_primary INTEGER DEFAULT 0,
+                created_at TEXT,
+                PRIMARY KEY (instance_id, session_id),
+                FOREIGN KEY (instance_id) REFERENCES instances(instance_id),
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id)
             )
         """)
