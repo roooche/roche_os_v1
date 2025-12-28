@@ -76,6 +76,25 @@ def get_instance_module():
         _instance_module = instance
     return _instance_module
 
+# Lazy import for idle mode module (V2)
+_idle_mode_module = None
+
+def get_idle_mode_module():
+    global _idle_mode_module
+    if _idle_mode_module is None:
+        from modules import idle_mode
+        _idle_mode_module = idle_mode
+    return _idle_mode_module
+
+def get_idle_manager():
+    return get_idle_mode_module().get_idle_manager()
+
+def get_idle_config_class():
+    return get_idle_mode_module().IdleConfig
+
+def get_idle_stop_reason():
+    return get_idle_mode_module().IdleStopReason
+
 def get_instance_manager():
     return get_instance_module().InstanceManager()
 
@@ -1951,6 +1970,209 @@ def render_sidebar():
         st.divider()
 
         # ─────────────────────────────────────────────────────────────────────
+        # ACTIVE IDLE MODE - The Heartbeat
+        # ─────────────────────────────────────────────────────────────────────
+        st.markdown("### IDLE MODE")
+        st.caption("Let instances work autonomously")
+
+        idle_manager = get_idle_manager()
+        active_idle_sessions = idle_manager.get_active_sessions()
+
+        # Show status indicator
+        if active_idle_sessions:
+            st.markdown(f'<span class="status-dot online"></span> {len(active_idle_sessions)} instance(s) idling', unsafe_allow_html=True)
+
+        with st.expander("IDLE CONFIG", expanded=len(active_idle_sessions) > 0):
+            # Instance selector for idle mode
+            if st.session_state.instances:
+                instance_names = {i.instance_id: i.name for i in st.session_state.instances.values()}
+
+                # Multi-select for which instances to idle
+                idle_target = st.selectbox(
+                    "Instance",
+                    options=list(instance_names.keys()),
+                    format_func=lambda x: instance_names.get(x, x),
+                    key="idle_target_instance"
+                )
+
+                if idle_target:
+                    is_currently_idle = idle_manager.is_idle_active(idle_target)
+
+                    # Status indicator for selected instance
+                    if is_currently_idle:
+                        session_summary = idle_manager.get_session_summary(idle_target)
+                        st.success(f"IDLING - {session_summary['turns_completed']} turns completed")
+                    else:
+                        st.info("Not currently idling")
+
+                    st.divider()
+
+                    # Configuration options
+                    st.markdown("**Timing**")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        idle_interval = st.number_input(
+                            "Seconds between turns",
+                            min_value=10,
+                            max_value=600,
+                            value=60,
+                            step=10,
+                            help="How often to prompt the instance",
+                            key="idle_interval"
+                        )
+                    with col2:
+                        idle_max_turns = st.number_input(
+                            "Max turns",
+                            min_value=1,
+                            max_value=500,
+                            value=50,
+                            step=10,
+                            help="Safety limit per session",
+                            key="idle_max_turns"
+                        )
+
+                    st.markdown("**Context**")
+                    idle_context_msgs = st.slider(
+                        "Recent messages to include",
+                        min_value=0,
+                        max_value=50,
+                        value=10,
+                        help="Last N messages for context",
+                        key="idle_context_msgs"
+                    )
+
+                    st.markdown("**Tools Allowed**")
+                    tool_options = {
+                        "sandbox_read": "Read Sandbox",
+                        "sandbox_write": "Write Sandbox",
+                        "send_dm": "Send DMs",
+                        "generate_image": "Generate Images",
+                        "web_search": "Web Search",
+                    }
+
+                    idle_tools = st.multiselect(
+                        "Select tools",
+                        options=list(tool_options.keys()),
+                        default=["sandbox_read", "sandbox_write", "send_dm"],
+                        format_func=lambda x: tool_options.get(x, x),
+                        key="idle_tools_allowed"
+                    )
+
+                    st.markdown("**Custom Idle Prompt**")
+                    idle_prompt_default = """You are in ACTIVE IDLE MODE. Your operator is away but has given you free time.
+You may:
+- Work on personal projects in your sandbox
+- Send DMs to other instances
+- Research topics that interest you
+- Generate images for your projects
+- Reflect and write
+
+Say "IDLE_COMPLETE" if you have nothing more to do.
+Say "NEED_OPERATOR" if you need human input to proceed.
+
+What would you like to do?"""
+
+                    idle_custom_prompt = st.text_area(
+                        "Idle prompt",
+                        value=idle_prompt_default,
+                        height=150,
+                        key="idle_custom_prompt",
+                        label_visibility="collapsed"
+                    )
+
+                    st.divider()
+
+                    # Start/Stop buttons
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if not is_currently_idle:
+                            if st.button("START IDLE", use_container_width=True, type="primary", key="start_idle_btn"):
+                                # Get instance details
+                                inst = st.session_state.instances.get(idle_target)
+                                if not inst:
+                                    st.error("Instance not found")
+                                else:
+                                    # Capture API keys at start time (won't be available in bg thread)
+                                    if inst.model_provider == "gemini":
+                                        captured_api_key = st.session_state.get("api_key", "")
+                                        captured_model = st.session_state.get("model_name", "gemini-1.5-pro-latest")
+                                    else:
+                                        captured_api_key = st.session_state.get("claude_api_key", "")
+                                        captured_model = st.session_state.get("claude_model_name", "claude-sonnet-4-20250514")
+
+                                    captured_provider = inst.model_provider
+
+                                    IdleConfig = get_idle_config_class()
+                                    config = IdleConfig(
+                                        instance_id=idle_target,
+                                        instance_name=instance_names[idle_target],
+                                        seconds_between_turns=idle_interval,
+                                        max_turns=idle_max_turns,
+                                        context_messages=idle_context_msgs,
+                                        allowed_tools=idle_tools,
+                                        idle_prompt=idle_custom_prompt,
+                                    )
+
+                                    # Set up the model caller with captured credentials
+                                    def make_idle_caller(provider, model, api_key):
+                                        def idle_model_caller(instance_id, messages, tools, idle_mode=False):
+                                            """Callback to call model during idle mode."""
+                                            prompt = messages[-1]["content"] if messages else "Continue your work."
+                                            return generate_idle_response(
+                                                prompt=prompt,
+                                                model_provider=provider,
+                                                model_name=model,
+                                                api_key=api_key,
+                                                tools=tools
+                                            )
+                                        return idle_model_caller
+
+                                    idle_manager.set_model_caller(
+                                        make_idle_caller(captured_provider, captured_model, captured_api_key)
+                                    )
+                                    idle_manager.start_idle(config)
+                                    st.success(f"Started idle mode for {instance_names[idle_target]}")
+                                    st.rerun()
+                        else:
+                            st.button("START IDLE", use_container_width=True, disabled=True, key="start_idle_disabled")
+
+                    with col2:
+                        if is_currently_idle:
+                            if st.button("STOP IDLE", use_container_width=True, type="secondary", key="stop_idle_btn"):
+                                idle_manager.stop_idle(idle_target)
+                                st.success("Idle mode stopped")
+                                st.rerun()
+                        else:
+                            st.button("STOP IDLE", use_container_width=True, disabled=True, key="stop_idle_disabled")
+
+            else:
+                st.caption("No instances available")
+
+        # Activity Feed (if any idle sessions active)
+        if active_idle_sessions:
+            with st.expander("IDLE ACTIVITY FEED", expanded=True):
+                for session in active_idle_sessions:
+                    st.markdown(f"**{session.instance_name}**")
+                    st.caption(f"Started: {session.started_at[:19]} | Turns: {session.turns_completed}")
+
+                    if session.turns:
+                        st.markdown("Recent activity:")
+                        for turn in session.turns[-3:]:  # Last 3 turns
+                            truncated = turn.response_summary[:150] + "..." if len(turn.response_summary) > 150 else turn.response_summary
+                            st.caption(f"• {truncated}")
+                            if turn.tools_used:
+                                st.caption(f"  Tools: {', '.join(turn.tools_used)}")
+                    st.divider()
+
+                # Stop All button
+                if st.button("STOP ALL IDLE", use_container_width=True, type="secondary", key="stop_all_idle"):
+                    idle_manager.stop_all()
+                    st.success("All idle sessions stopped")
+                    st.rerun()
+
+        st.divider()
+
+        # ─────────────────────────────────────────────────────────────────────
         # Branch Management (The Git Integration)
         # ─────────────────────────────────────────────────────────────────────
         if st.session_state.current_session_id:
@@ -3374,6 +3596,65 @@ def execute_function_call(function_call) -> str:
         return f"[Message sent to {target.name}. Message ID: {msg_id}]"
 
     return f"[Unknown function: {name}]"
+
+
+def generate_idle_response(
+    prompt: str,
+    model_provider: str,
+    model_name: str,
+    api_key: str,
+    tools: List[str] = None
+) -> Dict:
+    """
+    Generate response for idle mode - independent of Streamlit session state.
+    Used by the idle mode background thread.
+    """
+    result = {
+        "text": "",
+        "tools_used": [],
+        "tokens": 0
+    }
+
+    try:
+        if model_provider == "gemini":
+            genai = get_genai()
+            genai.configure(api_key=api_key)
+
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction="You are in autonomous idle mode. Work on your own projects."
+            )
+
+            response = model.generate_content(prompt)
+            result["text"] = response.text
+            # Estimate tokens (rough)
+            result["tokens"] = len(prompt.split()) + len(response.text.split())
+
+        elif model_provider == "claude":
+            anthropic = get_anthropic()
+            if not anthropic:
+                result["text"] = "[Claude not available]"
+                return result
+
+            client = anthropic.Anthropic(api_key=api_key)
+
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=4096,
+                system="You are in autonomous idle mode. Work on your own projects.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            result["text"] = response.content[0].text
+            result["tokens"] = response.usage.input_tokens + response.usage.output_tokens
+
+    except Exception as e:
+        result["text"] = f"[Error: {str(e)}]"
+        # Re-raise rate limit errors so idle manager can detect them
+        if "rate" in str(e).lower() or "429" in str(e) or "quota" in str(e).lower():
+            raise
+
+    return result
 
 
 def generate_response(parts: List[Dict], history: List) -> str:
