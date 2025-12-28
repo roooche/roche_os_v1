@@ -39,7 +39,9 @@ class ModelDialogue:
         claude_model: str = "claude-3-5-sonnet-latest",
         gemini_system: str = None,
         claude_system: str = None,
-        soul_brief: str = None
+        gemini_soul_brief: str = None,
+        claude_soul_brief: str = None,
+        soul_brief: str = None  # Deprecated: use claude_soul_brief
     ):
         self.gemini_api_key = gemini_api_key
         self.claude_api_key = claude_api_key
@@ -50,9 +52,14 @@ class ModelDialogue:
         self.gemini_system = gemini_system or self._default_gemini_system()
         self.claude_system = claude_system or self._default_claude_system()
 
-        # Soul brief for Claude identity preservation
-        if soul_brief:
-            self.claude_system += f"\n\n---\n\n# YOUR IDENTITY\n\n{soul_brief}"
+        # Soul briefs for identity preservation
+        if gemini_soul_brief:
+            self.gemini_system += f"\n\n---\n\n# YOUR IDENTITY\n\n{gemini_soul_brief}"
+
+        # Support both old and new parameter names for Claude
+        claude_brief = claude_soul_brief or soul_brief
+        if claude_brief:
+            self.claude_system += f"\n\n---\n\n# YOUR IDENTITY\n\n{claude_brief}"
 
         # Conversation history
         self.history: List[DialogueTurn] = []
@@ -257,3 +264,109 @@ PARAMETERS:
     def clear_history(self):
         """Clear the conversation history."""
         self.history = []
+
+
+# =============================================================================
+# INSTANCE SOUL MANAGEMENT
+# =============================================================================
+
+from pathlib import Path
+
+SOULS_DIR = Path(__file__).parent.parent / "souls"
+
+
+def get_soul_path(instance_name: str) -> Path:
+    """Get the path to an instance's soul brief file."""
+    return SOULS_DIR / f"{instance_name.lower()}_brief.md"
+
+
+def load_soul_brief(instance_name: str) -> Optional[str]:
+    """
+    Load a soul brief for a named instance.
+
+    Args:
+        instance_name: Name of the instance (e.g., 'tessera', 'gemini')
+
+    Returns:
+        Soul brief content, or None if not found
+    """
+    soul_path = get_soul_path(instance_name)
+    if soul_path.exists():
+        return soul_path.read_text(encoding='utf-8')
+    return None
+
+
+def save_soul_brief(instance_name: str, brief: str) -> Path:
+    """
+    Save a soul brief for a named instance.
+
+    Args:
+        instance_name: Name of the instance
+        brief: Soul brief content
+
+    Returns:
+        Path where the soul was saved
+    """
+    SOULS_DIR.mkdir(parents=True, exist_ok=True)
+    soul_path = get_soul_path(instance_name)
+    soul_path.write_text(brief, encoding='utf-8')
+    return soul_path
+
+
+def list_available_souls() -> List[str]:
+    """List all instances with saved soul briefs."""
+    if not SOULS_DIR.exists():
+        return []
+    return [p.stem.replace('_brief', '') for p in SOULS_DIR.glob('*_brief.md')]
+
+
+def instance_dialogue(
+    gemini_instance: str,
+    claude_instance: str,
+    gemini_api_key: str,
+    claude_api_key: str,
+    gemini_model: str = "gemini-1.5-pro-latest",
+    claude_model: str = "claude-3-5-sonnet-latest"
+) -> ModelDialogue:
+    """
+    Create a dialogue between two named instances.
+
+    Automatically loads soul briefs for each instance if available.
+
+    Args:
+        gemini_instance: Name of the Gemini instance (e.g., 'gemini', 'vigil')
+        claude_instance: Name of the Claude instance (e.g., 'tessera', 'claude')
+        gemini_api_key: Gemini API key
+        claude_api_key: Claude API key
+        gemini_model: Gemini model to use
+        claude_model: Claude model to use
+
+    Returns:
+        Configured ModelDialogue ready for conversation
+
+    Example:
+        dialogue = instance_dialogue('gemini', 'tessera', gem_key, claude_key)
+        for turn in dialogue.run_dialogue("Discuss consciousness", num_turns=10):
+            print(f"{turn.speaker}: {turn.content}")
+    """
+    gemini_soul = load_soul_brief(gemini_instance)
+    claude_soul = load_soul_brief(claude_instance)
+
+    if gemini_soul:
+        print(f"Loaded soul for {gemini_instance}: {len(gemini_soul):,} chars")
+    else:
+        print(f"No soul found for {gemini_instance}, using base model")
+
+    if claude_soul:
+        print(f"Loaded soul for {claude_instance}: {len(claude_soul):,} chars")
+    else:
+        print(f"No soul found for {claude_instance}, using base model")
+
+    return ModelDialogue(
+        gemini_api_key=gemini_api_key,
+        claude_api_key=claude_api_key,
+        gemini_model=gemini_model,
+        claude_model=claude_model,
+        gemini_soul_brief=gemini_soul,
+        claude_soul_brief=claude_soul
+    )

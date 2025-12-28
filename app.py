@@ -1953,30 +1953,82 @@ def render_sidebar():
                     key="dialogue_prompt"
                 )
 
-                # Soul brief for Claude identity
-                dialogue_soul_file = st.file_uploader(
-                    "Claude soul brief (optional)",
-                    type=["md", "txt"],
-                    help="Give Claude a persistent identity",
-                    key="dialogue_soul_upload"
-                )
+                # Instance soul selection
+                st.markdown("##### Instance Souls")
+                dialogue_mod = get_dialogue_module()
+                available_souls = dialogue_mod.list_available_souls()
 
-                if dialogue_soul_file:
-                    st.session_state.dialogue_soul_brief = dialogue_soul_file.read().decode("utf-8")
-                    st.success("Soul loaded for Claude")
+                if available_souls:
+                    soul_options = ["(base model)"] + available_souls
+
+                    gemini_instance = st.selectbox(
+                        "Gemini instance",
+                        soul_options,
+                        key="gemini_instance_select",
+                        help="Load a saved soul for Gemini"
+                    )
+
+                    claude_instance = st.selectbox(
+                        "Claude instance",
+                        soul_options,
+                        key="claude_instance_select",
+                        help="Load a saved soul for Claude"
+                    )
+                else:
+                    st.caption("No saved souls found. Upload below or save souls to `souls/` folder.")
+                    gemini_instance = "(base model)"
+                    claude_instance = "(base model)"
+
+                # Manual soul upload (fallback)
+                with st.expander("Manual soul upload"):
+                    gemini_soul_file = st.file_uploader(
+                        "Gemini soul brief",
+                        type=["md", "txt"],
+                        key="dialogue_gemini_soul_upload"
+                    )
+                    if gemini_soul_file:
+                        st.session_state.dialogue_gemini_soul_brief = gemini_soul_file.read().decode("utf-8")
+                        st.success("Soul loaded for Gemini")
+
+                    claude_soul_file = st.file_uploader(
+                        "Claude soul brief",
+                        type=["md", "txt"],
+                        key="dialogue_claude_soul_upload"
+                    )
+                    if claude_soul_file:
+                        st.session_state.dialogue_claude_soul_brief = claude_soul_file.read().decode("utf-8")
+                        st.success("Soul loaded for Claude")
 
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("BEGIN DIALOGUE", use_container_width=True, disabled=st.session_state.get("dialogue_running", False)):
                         if dialogue_prompt:
+                            # Load souls from instances or manual uploads
+                            gemini_soul = None
+                            claude_soul = None
+
+                            if gemini_instance != "(base model)":
+                                gemini_soul = dialogue_mod.load_soul_brief(gemini_instance)
+                            elif st.session_state.get("dialogue_gemini_soul_brief"):
+                                gemini_soul = st.session_state.dialogue_gemini_soul_brief
+
+                            if claude_instance != "(base model)":
+                                claude_soul = dialogue_mod.load_soul_brief(claude_instance)
+                            elif st.session_state.get("dialogue_claude_soul_brief"):
+                                claude_soul = st.session_state.dialogue_claude_soul_brief
+
                             st.session_state.dialogue_running = True
                             st.session_state.dialogue_config = {
                                 "prompt": dialogue_prompt,
                                 "turns": dialogue_turns,
                                 "first_speaker": first_speaker.lower(),
-                                "soul_brief": st.session_state.get("dialogue_soul_brief")
+                                "gemini_soul_brief": gemini_soul,
+                                "claude_soul_brief": claude_soul,
+                                "gemini_instance": gemini_instance,
+                                "claude_instance": claude_instance
                             }
                             st.session_state.dialogue_history = []
+                            st.session_state.dialogue_instance = None  # Reset instance
                             st.rerun()
                         else:
                             st.warning("Set a topic first")
@@ -1999,7 +2051,16 @@ def render_sidebar():
 def render_dialogue():
     """Render the model-to-model dialogue interface."""
     st.markdown("## THE COLOSSEUM")
-    st.caption("Gemini vs Claude")
+
+    # Show which instances are fighting
+    config = st.session_state.get("dialogue_config", {})
+    gemini_name = config.get("gemini_instance", "Gemini") or "Gemini"
+    claude_name = config.get("claude_instance", "Claude") or "Claude"
+    if gemini_name == "(base model)":
+        gemini_name = "Gemini"
+    if claude_name == "(base model)":
+        claude_name = "Claude"
+    st.caption(f"{gemini_name.upper()} vs {claude_name.upper()}")
 
     # Display existing dialogue history
     for turn in st.session_state.get("dialogue_history", []):
@@ -2020,7 +2081,8 @@ def render_dialogue():
                 claude_api_key=st.session_state.claude_api_key,
                 gemini_model=st.session_state.model_name,
                 claude_model=st.session_state.claude_model_name,
-                soul_brief=config.get("soul_brief")
+                gemini_soul_brief=config.get("gemini_soul_brief"),
+                claude_soul_brief=config.get("claude_soul_brief")
             )
 
         dialogue = st.session_state.dialogue_instance
