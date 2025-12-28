@@ -108,6 +108,9 @@ Known issues:
 - DMs don't auto-trigger API response (requires manual wake)
 - Colosseum only allows cross-provider matchups
 - UI needs work
+- Plenty of issues with stability of instance switching
+- API key saving issues
+- outdated model list for Gemini
 
 ## License
 
